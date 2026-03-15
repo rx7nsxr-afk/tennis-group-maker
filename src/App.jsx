@@ -1,0 +1,1403 @@
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+  Button,
+  Input,
+  Label,
+  Badge,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "./ui";
+import {
+  Save,
+  Shuffle,
+  Printer,
+  BookOpen,
+  Plus,
+  Trash2,
+  Trophy,
+  Smartphone,
+  Users,
+  Table2,
+  Link2,
+} from "lucide-react";
+import { motion } from "framer-motion";
+
+const STORAGE_KEY = "tennis-practice-app-v2";
+const ROSTER_STORAGE_KEY = "tennis-practice-roster-v5";
+const FIXED_PAIR_STORAGE_KEY = "tennis-practice-fixed-pairs-v1";
+
+const FACULTY_ORDER = [
+  "PP", "PL", "Z", "G", "MB", "N", "SP", "SC", "SB", "HS", "ML", "ET", "CE", "RT", "RE", "PT", "OT", "ST", "OV", "FU",
+];
+const YEAR_OPTIONS = ["OB", "3年", "2年", "1年"];
+const ROLE_OPTIONS = ["なし", "主将", "男子副将", "女子副将", "主務", "副務", "会計"];
+const ROLE_PRIORITY = { 主将: 0, 男子副将: 1, 女子副将: 2, 主務: 3, 副務: 4, 会計: 5, なし: 99 };
+const YEAR_PRIORITY = { OB: 0, "3年": 1, "2年": 2, "1年": 3 };
+const FACULTY_PRIORITY = Object.fromEntries(FACULTY_ORDER.map((code, idx) => [code, idx]));
+const COURT_LEVEL_OPTIONS = ["1~2", "2~3", "3~4"];
+const PRACTICE_GROUP_OPTIONS = [2, 3, 4];
+const COURT_COUNT_OPTIONS = [1, 2, 3, 4, 5, 6, 7];
+const LEVEL_OPTIONS = [1, 2, 3, 4];
+const TWO_PAIR_OPTIONS = [0, 1, 2, 3];
+const THREE_PAIR_OPTIONS = [0, 1, 2];
+
+function shuffle(arr) {
+  const copy = [...arr];
+  for (let i = copy.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+}
+
+function displayName(player) {
+  return player.yearCategory === "OB" ? `${player.name}さん` : player.name;
+}
+
+function roleRank(role) {
+  return ROLE_PRIORITY[role] ?? 999;
+}
+
+function yearRank(yearCategory) {
+  return YEAR_PRIORITY[yearCategory] ?? 999;
+}
+
+function facultyRank(faculty) {
+  return FACULTY_PRIORITY[faculty] ?? 999;
+}
+
+function comparePlayers(a, b) {
+  if (a.yearCategory === "OB" && b.yearCategory !== "OB") return -1;
+  if (a.yearCategory !== "OB" && b.yearCategory === "OB") return 1;
+
+  if (a.yearCategory === "OB" && b.yearCategory === "OB") {
+    const gen = Number(a.obGeneration ?? 999) - Number(b.obGeneration ?? 999);
+    if (gen !== 0) return gen;
+
+    const role = roleRank(a.role) - roleRank(b.role);
+    if (role !== 0) return role;
+
+    const fac = facultyRank(a.faculty) - facultyRank(b.faculty);
+    if (fac !== 0) return fac;
+
+    return a.name.localeCompare(b.name, "ja");
+  }
+
+  const role = roleRank(a.role) - roleRank(b.role);
+  if (role !== 0) return role;
+
+  const year = yearRank(a.yearCategory) - yearRank(b.yearCategory);
+  if (year !== 0) return year;
+
+  const fac = facultyRank(a.faculty) - facultyRank(b.faculty);
+  if (fac !== 0) return fac;
+
+  return a.name.localeCompare(b.name, "ja");
+}
+
+function sortByPriority(players) {
+  return [...players].sort(comparePlayers);
+}
+
+function parseCourtBand(label) {
+  const [min, max] = label.split("~").map(Number);
+  return { min, max };
+}
+
+function inCourtBand(level, bandLabel) {
+  const { min, max } = parseCourtBand(bandLabel);
+  return level >= min && level <= max;
+}
+
+function pairNameKey(a, b) {
+  return [a, b].sort().join("__");
+}
+
+function buildPastPairMap(practiceHistory) {
+  const map = new Map();
+
+  practiceHistory.forEach((practice) => {
+    if (practice.mode !== "doubles") return;
+
+    (practice.rows || []).forEach((row) => {
+      ([...(row.pairs || []), ...(row.triples || [])]).forEach((pair) => {
+        if (pair.length < 2) return;
+
+        for (let i = 0; i < pair.length; i += 1) {
+          for (let j = i + 1; j < pair.length; j += 1) {
+            const key = pairNameKey(pair[i], pair[j]);
+            map.set(key, (map.get(key) || 0) + 1);
+          }
+        }
+      });
+    });
+  });
+
+  return map;
+}
+
+function repeatedPairCountByNames(names, pastPairMap) {
+  let total = 0;
+  for (let i = 0; i < names.length; i += 1) {
+    for (let j = i + 1; j < names.length; j += 1) {
+      total += pastPairMap.get(pairNameKey(names[i], names[j])) || 0;
+    }
+  }
+  return total;
+}
+
+function chooseAdditionalMembers(anchor, pool, needCount, pastPairMap) {
+  const eligible = pool.filter((p) => Math.abs(Number(p.level) - Number(anchor.level)) <= 1);
+  if (eligible.length === 0) return [];
+
+  const chosen = [];
+  let remaining = shuffle(eligible);
+
+  while (chosen.length < needCount && remaining.length > 0) {
+    remaining.sort((a, b) => {
+      const aNames = [anchor.name, ...chosen.map((x) => x.name), a.name];
+      const bNames = [anchor.name, ...chosen.map((x) => x.name), b.name];
+      const aPenalty = repeatedPairCountByNames(aNames, pastPairMap);
+      const bPenalty = repeatedPairCountByNames(bNames, pastPairMap);
+      if (aPenalty !== bPenalty) return aPenalty - bPenalty;
+
+      const aDiff = Math.abs(Number(a.level) - Number(anchor.level));
+      const bDiff = Math.abs(Number(b.level) - Number(anchor.level));
+      if (aDiff !== bDiff) return aDiff - bDiff;
+
+      return comparePlayers(a, b);
+    });
+
+    const picked = remaining.shift();
+    chosen.push(picked);
+    remaining = remaining.filter((p) => p.id !== picked.id);
+  }
+
+  return chosen;
+}
+
+function makePairsForCourt(players, twoPlayerPairCount, threePlayerPairCount, fixedPairs, pastPairMap) {
+  const pairs = [];
+  const triples = [];
+  const usedIds = new Set();
+
+  fixedPairs.forEach((fixedPair) => {
+    if (pairs.length >= twoPlayerPairCount) return;
+
+    const found = fixedPair.memberIds
+      .map((id) => players.find((p) => p.id === id))
+      .filter(Boolean);
+
+    if (found.length === 2 && !usedIds.has(found[0].id) && !usedIds.has(found[1].id)) {
+      pairs.push(found.map((p) => displayName(p)));
+      usedIds.add(found[0].id);
+      usedIds.add(found[1].id);
+    }
+  });
+
+  let available = players.filter((p) => !usedIds.has(p.id));
+
+  while (available.length > 0 && pairs.length < twoPlayerPairCount) {
+    const first = available.shift();
+    if (!first) break;
+
+    if (available.length === 0) {
+      triples.push([displayName(first)]);
+      break;
+    }
+
+    available.sort((a, b) => {
+      const aPenalty = pastPairMap.get(pairNameKey(first.name, a.name)) || 0;
+      const bPenalty = pastPairMap.get(pairNameKey(first.name, b.name)) || 0;
+      if (aPenalty !== bPenalty) return aPenalty - bPenalty;
+
+      const aDiff = Math.abs(Number(a.level) - Number(first.level));
+      const bDiff = Math.abs(Number(b.level) - Number(first.level));
+      if (aDiff !== bDiff) return aDiff - bDiff;
+
+      return comparePlayers(a, b);
+    });
+
+    const second = available.shift();
+    pairs.push([displayName(first), displayName(second)]);
+  }
+
+  while (available.length > 0 && triples.length < threePlayerPairCount) {
+    const first = available.shift();
+    if (!first) break;
+
+    const triple = [first];
+    available.sort((a, b) => {
+      const aDiff = Math.abs(Number(a.level) - Number(first.level));
+      const bDiff = Math.abs(Number(b.level) - Number(first.level));
+      if (aDiff !== bDiff) return aDiff - bDiff;
+      return comparePlayers(a, b);
+    });
+
+    while (triple.length < 3 && available.length > 0) {
+      triple.push(available.shift());
+    }
+
+    triples.push(triple.map((p) => displayName(p)));
+  }
+
+  return {
+    pairs,
+    triples,
+    leftovers: available.map((p) => displayName(p)),
+  };
+}
+
+function generateDoublesPlan(players, settings, practiceHistory, fixedPairs) {
+  const active = sortByPriority(players.filter((p) => p.present));
+  const pastPairMap = buildPastPairMap(practiceHistory);
+  const remaining = [...active];
+  const rows = [];
+
+  settings.courts.forEach((court) => {
+    const anchor = remaining.find((p) => inCourtBand(Number(p.level), court.levelBand));
+
+    if (!anchor) {
+      rows.push({
+        courtNumber: court.courtNumber,
+        courtLevel: court.levelBand,
+        pairs: [],
+        triples: [],
+        players: [],
+        leftovers: [],
+      });
+      return;
+    }
+
+    const anchorIndex = remaining.findIndex((p) => p.id === anchor.id);
+    if (anchorIndex >= 0) remaining.splice(anchorIndex, 1);
+
+    const memberCount = Math.max(
+      Number(settings.twoPlayerPairCount) * 2 + Number(settings.threePlayerPairCount) * 3,
+      2,
+    );
+    const others = chooseAdditionalMembers(anchor, remaining, memberCount - 1, pastPairMap);
+
+    others.forEach((picked) => {
+      const idx = remaining.findIndex((p) => p.id === picked.id);
+      if (idx >= 0) remaining.splice(idx, 1);
+    });
+
+    const courtPlayers = sortByPriority([anchor, ...others]);
+    const courtFixedPairs = fixedPairs.filter((pair) =>
+      pair.memberIds.every((id) => courtPlayers.some((p) => p.id === id)),
+    );
+    const pairResult = makePairsForCourt(
+      courtPlayers,
+      Number(settings.twoPlayerPairCount),
+      Number(settings.threePlayerPairCount),
+      courtFixedPairs,
+      pastPairMap,
+    );
+
+    rows.push({
+      courtNumber: court.courtNumber,
+      courtLevel: court.levelBand,
+      players: courtPlayers.map((p) => displayName(p)),
+      pairs: pairResult.pairs,
+      triples: pairResult.triples,
+      leftovers: pairResult.leftovers,
+    });
+  });
+
+  return {
+    rows,
+    leftovers: [...remaining.map((p) => displayName(p)), ...rows.flatMap((row) => row.leftovers)],
+  };
+}
+
+function generatePracticePlan(players, groupSize, practiceHistory) {
+  const active = sortByPriority(players.filter((p) => p.present));
+  const pastPairMap = buildPastPairMap(practiceHistory);
+  const remaining = [...active];
+  const groups = [];
+  let groupNumber = 1;
+
+  while (remaining.length > 0) {
+    const anchor = remaining.shift();
+    if (!anchor) break;
+
+    const others = chooseAdditionalMembers(anchor, remaining, groupSize - 1, pastPairMap);
+    others.forEach((picked) => {
+      const idx = remaining.findIndex((p) => p.id === picked.id);
+      if (idx >= 0) remaining.splice(idx, 1);
+    });
+
+    const members = sortByPriority([anchor, ...others]).map((p) => displayName(p));
+    groups.push({ groupNumber, groupSize: members.length, members });
+    groupNumber += 1;
+  }
+
+  return { groups, leftovers: [] };
+}
+
+function rehydratePlayers(players = []) {
+  return players.map((p) => ({
+    ...p,
+    id: p.id || crypto.randomUUID(),
+    level: Number(p.level ?? 2),
+    yearCategory: p.yearCategory || "1年",
+    faculty: p.faculty || "PP",
+    role: p.role || "なし",
+    obGeneration:
+      p.obGeneration === "" || p.obGeneration === null || p.obGeneration === undefined
+        ? null
+        : Number(p.obGeneration),
+    present: Boolean(p.present),
+  }));
+}
+
+function createDefaultCourts(count) {
+  return Array.from({ length: count }, (_, idx) => ({
+    courtNumber: idx + 1,
+    levelBand: idx < 2 ? "1~2" : idx < 4 ? "2~3" : "3~4",
+  }));
+}
+
+function buildPrintableRowsFromHistory(practiceHistory) {
+  return practiceHistory.flatMap((practice) => {
+    if (practice.mode === "doubles") {
+      return (practice.rows || []).map((row) => ({
+        menu: practice.title,
+        type: "ダブルス",
+        label: `${row.courtNumber}面`,
+        level: row.courtLevel,
+        slot1: row.pairs[0]?.join(" / ") ?? row.triples[0]?.join(" / ") ?? "-",
+        slot2: row.pairs[1]?.join(" / ") ?? row.triples[1]?.join(" / ") ?? "-",
+        slot3: row.pairs[2]?.join(" / ") ?? row.triples[2]?.join(" / ") ?? "-",
+      }));
+    }
+
+    return (practice.groups || []).map((group) => ({
+      menu: practice.title,
+      type: "対人練",
+      label: `${group.groupNumber}組`,
+      level: "-",
+      slot1: group.members[0] ?? "-",
+      slot2: group.members[1] ?? "-",
+      slot3: group.members.slice(2).join(" / ") || "-",
+    }));
+  });
+}
+
+const defaultPlayers = [
+  { id: crypto.randomUUID(), name: "榎本", level: 4, yearCategory: "3年", faculty: "PP", role: "主将", obGeneration: null, present: true },
+  { id: crypto.randomUUID(), name: "田中", level: 3, yearCategory: "2年", faculty: "PP", role: "男子副将", obGeneration: null, present: true },
+  { id: crypto.randomUUID(), name: "佐藤", level: 2, yearCategory: "1年", faculty: "PL", role: "なし", obGeneration: null, present: true },
+  { id: crypto.randomUUID(), name: "鈴木", level: 2, yearCategory: "3年", faculty: "Z", role: "主務", obGeneration: null, present: true },
+  { id: crypto.randomUUID(), name: "高橋", level: 1, yearCategory: "2年", faculty: "Z", role: "会計", obGeneration: null, present: true },
+  { id: crypto.randomUUID(), name: "山本", level: 1, yearCategory: "OB", faculty: "G", role: "主将", obGeneration: 40, present: true },
+];
+
+function LabeledSelect({ label, value, onChange, options, className = "h-11", renderValue }) {
+  return (
+    <div className="space-y-2">
+      <Label>{label}</Label>
+      <Select value={value} onValueChange={onChange}>
+        <SelectTrigger className={className}>
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {options.map((option) => {
+            const optionValue = String(option.value ?? option);
+            const optionLabel = option.label ?? renderValue?.(option) ?? String(option);
+            return (
+              <SelectItem key={optionValue} value={optionValue}>
+                {optionLabel}
+              </SelectItem>
+            );
+          })}
+        </SelectContent>
+      </Select>
+    </div>
+  );
+}
+
+function SectionCard({ title, description, icon: Icon, children, className = "" }) {
+  return (
+    <Card className={`rounded-2xl shadow-sm print:shadow-none print:border ${className}`.trim()}>
+      <CardHeader>
+        <CardTitle className="text-lg sm:text-xl flex items-center gap-2">
+          {Icon ? <Icon className="h-5 w-5" /> : null}
+          {title}
+        </CardTitle>
+        {description ? <CardDescription>{description}</CardDescription> : null}
+      </CardHeader>
+      <CardContent>{children}</CardContent>
+    </Card>
+  );
+}
+
+function PlayerRegistration(props) {
+  const {
+    sortedPlayers,
+    newName,
+    setNewName,
+    newLevel,
+    setNewLevel,
+    newYearCategory,
+    setNewYearCategory,
+    newFaculty,
+    setNewFaculty,
+    newRole,
+    setNewRole,
+    newObGeneration,
+    setNewObGeneration,
+    addPlayer,
+    updatePlayer,
+    removePlayer,
+    saveCurrentRoster,
+    loadSavedRoster,
+    resetTodayPresence,
+    selectedPairIds,
+    togglePairSelection,
+  } = props;
+
+  return (
+    <SectionCard
+      title="参加者登録"
+      description="最初にここで参加者を登録してから、ダブルス・対人練へ移動します。"
+      icon={Users}
+      className="print:hidden"
+    >
+      <div className="space-y-4">
+        <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 xl:grid-cols-3">
+          <div className="space-y-2">
+            <Label>名前</Label>
+            <Input
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              placeholder="例：榎本"
+              className="h-11"
+            />
+          </div>
+
+          <LabeledSelect
+            label="レベル"
+            value={newLevel}
+            onChange={setNewLevel}
+            options={LEVEL_OPTIONS.map((n) => ({ value: n, label: String(n) }))}
+          />
+
+          <LabeledSelect
+            label="学年 / OB"
+            value={newYearCategory}
+            onChange={setNewYearCategory}
+            options={YEAR_OPTIONS}
+          />
+
+          <LabeledSelect label="役職" value={newRole} onChange={setNewRole} options={ROLE_OPTIONS} />
+
+          {newYearCategory === "OB" ? (
+            <div className="space-y-2">
+              <Label>OB期</Label>
+              <Input
+                type="number"
+                min="1"
+                value={newObGeneration}
+                onChange={(e) => setNewObGeneration(e.target.value)}
+                placeholder="例：40"
+                className="h-11"
+              />
+            </div>
+          ) : null}
+
+          <LabeledSelect label="学部" value={newFaculty} onChange={setNewFaculty} options={FACULTY_ORDER} />
+
+          <div className="flex items-end">
+            <Button className="w-full h-11 rounded-2xl" onClick={addPlayer}>
+              <Plus className="mr-2 h-4 w-4" />追加
+            </Button>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" className="rounded-2xl h-11" onClick={saveCurrentRoster}>
+            <Save className="mr-2 h-4 w-4" />参加者を保存
+          </Button>
+          <Button variant="outline" className="rounded-2xl h-11" onClick={loadSavedRoster}>
+            <BookOpen className="mr-2 h-4 w-4" />保存済み参加者を読込
+          </Button>
+          <Button variant="outline" className="rounded-2xl h-11" onClick={resetTodayPresence}>
+            全員参加に戻す
+          </Button>
+        </div>
+
+        <div className="grid gap-3">
+          {sortedPlayers.map((player) => (
+            <div key={player.id} className="rounded-2xl border bg-white p-3 sm:p-4">
+              <div className="grid gap-3 md:grid-cols-[48px_1fr_90px_110px_120px_120px_120px_90px_44px] items-center">
+                <div className="flex justify-center">
+                  <input
+                    type="checkbox"
+                    checked={selectedPairIds.includes(player.id)}
+                    onChange={() => togglePairSelection(player.id)}
+                  />
+                </div>
+
+                <Input
+                  value={player.name}
+                  onChange={(e) => updatePlayer(player.id, { name: e.target.value })}
+                  className="h-11"
+                />
+
+                <Select
+                  value={String(player.level)}
+                  onValueChange={(v) => updatePlayer(player.id, { level: Number(v) })}
+                >
+                  <SelectTrigger className="h-11">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {LEVEL_OPTIONS.map((n) => (
+                      <SelectItem key={n} value={String(n)}>{`Lv${n}`}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+
+                <Select
+                  value={player.yearCategory}
+                  onValueChange={(v) => updatePlayer(player.id, { yearCategory: v })}
+                >
+                  <SelectTrigger className="h-11">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {YEAR_OPTIONS.map((year) => (
+                      <SelectItem key={year} value={year}>{year}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+
+                <Select value={player.role} onValueChange={(v) => updatePlayer(player.id, { role: v })}>
+                  <SelectTrigger className="h-11">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {ROLE_OPTIONS.map((role) => (
+                      <SelectItem key={role} value={role}>{role}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+
+                <Select value={player.faculty} onValueChange={(v) => updatePlayer(player.id, { faculty: v })}>
+                  <SelectTrigger className="h-11">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {FACULTY_ORDER.map((code) => (
+                      <SelectItem key={code} value={code}>{code}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+
+                {player.yearCategory === "OB" ? (
+                  <Input
+                    type="number"
+                    min="1"
+                    value={player.obGeneration ?? ""}
+                    onChange={(e) =>
+                      updatePlayer(player.id, {
+                        obGeneration: e.target.value === "" ? null : Number(e.target.value),
+                      })
+                    }
+                    placeholder="OB期"
+                    className="h-11"
+                  />
+                ) : (
+                  <div className="h-11 rounded-2xl border bg-slate-50 px-3 flex items-center text-sm text-slate-400">
+                    OB以外は期なし
+                  </div>
+                )}
+
+                <Button
+                  variant={player.present ? "default" : "outline"}
+                  className="h-11 rounded-2xl"
+                  onClick={() => updatePlayer(player.id, { present: !player.present })}
+                >
+                  {player.present ? "参加" : "欠席"}
+                </Button>
+
+                <Button variant="ghost" size="icon" className="h-11 w-11" onClick={() => removePlayer(player.id)}>
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </SectionCard>
+  );
+}
+
+export default function TennisPracticeGroupMaker() {
+  const [players, setPlayers] = useState(defaultPlayers);
+  const [savedRoster, setSavedRoster] = useState(defaultPlayers);
+  const [newName, setNewName] = useState("");
+  const [newLevel, setNewLevel] = useState("2");
+  const [newYearCategory, setNewYearCategory] = useState("1年");
+  const [newFaculty, setNewFaculty] = useState("PP");
+  const [newRole, setNewRole] = useState("なし");
+  const [newObGeneration, setNewObGeneration] = useState("");
+  const [courtCount, setCourtCount] = useState("3");
+  const [twoPlayerPairCount, setTwoPlayerPairCount] = useState("2");
+  const [threePlayerPairCount, setThreePlayerPairCount] = useState("0");
+  const [courts, setCourts] = useState(createDefaultCourts(3));
+  const [practiceGroupSize, setPracticeGroupSize] = useState("2");
+  const [practiceName, setPracticeName] = useState("");
+  const [practiceHistory, setPracticeHistory] = useState([]);
+  const [doublesResult, setDoublesResult] = useState(null);
+  const [practiceResult, setPracticeResult] = useState(null);
+  const [selectedPairIds, setSelectedPairIds] = useState([]);
+  const [pairTemplateName, setPairTemplateName] = useState("");
+  const [fixedPairs, setFixedPairs] = useState([]);
+  const [saveStatus, setSaveStatus] = useState("未保存");
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      const rosterRaw = localStorage.getItem(ROSTER_STORAGE_KEY);
+      const fixedPairRaw = localStorage.getItem(FIXED_PAIR_STORAGE_KEY);
+
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed.players) setPlayers(rehydratePlayers(parsed.players));
+        if (parsed.courtCount) setCourtCount(String(parsed.courtCount));
+        if (parsed.twoPlayerPairCount) setTwoPlayerPairCount(String(parsed.twoPlayerPairCount));
+        if (parsed.threePlayerPairCount !== undefined) setThreePlayerPairCount(String(parsed.threePlayerPairCount));
+        if (parsed.courts) setCourts(parsed.courts);
+        if (parsed.practiceGroupSize) setPracticeGroupSize(String(parsed.practiceGroupSize));
+        if (parsed.practiceHistory) setPracticeHistory(parsed.practiceHistory);
+      }
+
+      if (rosterRaw) {
+        const parsedRoster = JSON.parse(rosterRaw);
+        if (parsedRoster.players) setSavedRoster(rehydratePlayers(parsedRoster.players));
+      }
+
+      if (fixedPairRaw) {
+        const parsedPairs = JSON.parse(fixedPairRaw);
+        if (parsedPairs.fixedPairs) setFixedPairs(parsedPairs.fixedPairs);
+      }
+
+      setSaveStatus("保存データを読み込み済み");
+    } catch {
+      setSaveStatus("保存データの読込に失敗");
+    } finally {
+      setLoaded(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!loaded) return;
+
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        players,
+        courtCount,
+        twoPlayerPairCount,
+        threePlayerPairCount,
+        courts,
+        practiceGroupSize,
+        practiceHistory,
+      }),
+    );
+    localStorage.setItem(FIXED_PAIR_STORAGE_KEY, JSON.stringify({ fixedPairs }));
+    setSaveStatus("自動保存済み");
+  }, [
+    players,
+    courtCount,
+    twoPlayerPairCount,
+    threePlayerPairCount,
+    courts,
+    practiceGroupSize,
+    practiceHistory,
+    fixedPairs,
+    loaded,
+  ]);
+
+  const sortedPlayers = useMemo(() => sortByPriority(players), [players]);
+  const presentPlayers = useMemo(() => sortByPriority(players.filter((p) => p.present)), [players]);
+  const printRows = useMemo(() => buildPrintableRowsFromHistory(practiceHistory), [practiceHistory]);
+
+  const doublesSummary = useMemo(() => {
+    const neededPlayers = Number(courtCount) * (Number(twoPlayerPairCount) * 2 + Number(threePlayerPairCount) * 3);
+    return {
+      present: presentPlayers.length,
+      neededPlayers,
+      shortage: Math.max(neededPlayers - presentPlayers.length, 0),
+      overflow: Math.max(presentPlayers.length - neededPlayers, 0),
+    };
+  }, [courtCount, twoPlayerPairCount, threePlayerPairCount, presentPlayers]);
+
+  const practiceSummary = useMemo(() => {
+    const groupSize = Number(practiceGroupSize);
+    return {
+      present: presentPlayers.length,
+      expectedGroups: Math.ceil(presentPlayers.length / Math.max(groupSize, 1)),
+    };
+  }, [practiceGroupSize, presentPlayers]);
+
+  const syncCourtCount = useCallback((nextCount) => {
+    const n = Math.max(1, Math.min(7, Number(nextCount) || 1));
+    setCourtCount(String(n));
+    setCourts((prev) => {
+      const next = createDefaultCourts(n);
+      return next.map((court, idx) => (prev[idx] ? { ...court, levelBand: prev[idx].levelBand } : court));
+    });
+  }, []);
+
+  const updateCourtLevel = useCallback((courtNumber, levelBand) => {
+    setCourts((prev) => prev.map((court) => (court.courtNumber === courtNumber ? { ...court, levelBand } : court)));
+  }, []);
+
+  const addPlayer = useCallback(() => {
+    const name = newName.trim();
+    if (!name) return;
+
+    const isOb = newYearCategory === "OB";
+    setPlayers((prev) =>
+      sortByPriority([
+        ...prev,
+        {
+          id: crypto.randomUUID(),
+          name,
+          level: Number(newLevel),
+          yearCategory: newYearCategory,
+          faculty: newFaculty,
+          role: newRole,
+          obGeneration: isOb && newObGeneration !== "" ? Number(newObGeneration) : null,
+          present: true,
+        },
+      ]),
+    );
+    setNewName("");
+    setNewLevel("2");
+    setNewYearCategory("1年");
+    setNewFaculty("PP");
+    setNewRole("なし");
+    setNewObGeneration("");
+  }, [newFaculty, newLevel, newName, newObGeneration, newRole, newYearCategory]);
+
+  const updatePlayer = useCallback((id, patch) => {
+    setPlayers((prev) =>
+      sortByPriority(
+        prev.map((p) => {
+          if (p.id !== id) return p;
+          const next = { ...p, ...patch };
+          if (next.yearCategory !== "OB") next.obGeneration = null;
+          return next;
+        }),
+      ),
+    );
+  }, []);
+
+  const removePlayer = useCallback((id) => {
+    setPlayers((prev) => prev.filter((p) => p.id !== id));
+    setSelectedPairIds((prev) => prev.filter((x) => x !== id));
+    setFixedPairs((prev) => prev.filter((pair) => !pair.memberIds.includes(id)));
+  }, []);
+
+  const saveCurrentRoster = useCallback(() => {
+    localStorage.setItem(ROSTER_STORAGE_KEY, JSON.stringify({ players }));
+    setSavedRoster(players);
+    setSaveStatus("参加者名簿を保存済み");
+  }, [players]);
+
+  const loadSavedRoster = useCallback(() => {
+    setPlayers(rehydratePlayers(savedRoster).map((p) => ({ ...p, present: true })));
+    setDoublesResult(null);
+    setPracticeResult(null);
+  }, [savedRoster]);
+
+  const resetTodayPresence = useCallback(() => {
+    setPlayers((prev) => prev.map((p) => ({ ...p, present: true })));
+    setDoublesResult(null);
+    setPracticeResult(null);
+  }, []);
+
+  const togglePairSelection = useCallback((id) => {
+    setSelectedPairIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }, []);
+
+  const createFixedPair = useCallback(() => {
+    const unique = Array.from(new Set(selectedPairIds));
+    if (unique.length !== 2) return;
+
+    const pairPlayers = unique.map((id) => players.find((p) => p.id === id)).filter(Boolean);
+    if (pairPlayers.length !== 2) return;
+
+    setFixedPairs((prev) => [
+      ...prev,
+      {
+        id: crypto.randomUUID(),
+        name: pairTemplateName.trim() || `${pairPlayers[0].name}・${pairPlayers[1].name}`,
+        memberIds: unique,
+        memberNames: pairPlayers.map((p) => displayName(p)),
+      },
+    ]);
+    setSelectedPairIds([]);
+    setPairTemplateName("");
+  }, [pairTemplateName, players, selectedPairIds]);
+
+  const removeFixedPair = useCallback((id) => {
+    setFixedPairs((prev) => prev.filter((pair) => pair.id !== id));
+  }, []);
+
+  const runDoubles = useCallback(() => {
+    const plan = generateDoublesPlan(
+      players,
+      {
+        twoPlayerPairCount: Number(twoPlayerPairCount),
+        threePlayerPairCount: Number(threePlayerPairCount),
+        courts,
+      },
+      practiceHistory,
+      fixedPairs,
+    );
+    setDoublesResult(plan);
+  }, [courts, fixedPairs, players, practiceHistory, threePlayerPairCount, twoPlayerPairCount]);
+
+  const runPractice = useCallback(() => {
+    const plan = generatePracticePlan(players, Number(practiceGroupSize), practiceHistory);
+    setPracticeResult(plan);
+  }, [players, practiceGroupSize, practiceHistory]);
+
+  const saveCurrentPractice = useCallback(
+    (mode) => {
+      const title = practiceName.trim() || `練習 ${practiceHistory.length + 1}`;
+
+      if (mode === "doubles") {
+        if (!doublesResult) return;
+        setPracticeHistory((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            title,
+            mode: "doubles",
+            createdAt: new Date().toLocaleString("ja-JP"),
+            rows: doublesResult.rows.map((row) => ({
+              courtNumber: row.courtNumber,
+              courtLevel: row.courtLevel,
+              pairs: row.pairs,
+              triples: row.triples,
+            })),
+            leftovers: doublesResult.leftovers,
+          },
+        ]);
+        setPracticeName("");
+        return;
+      }
+
+      if (!practiceResult) return;
+      setPracticeHistory((prev) => [
+        ...prev,
+        {
+          id: crypto.randomUUID(),
+          title,
+          mode: "practice",
+          createdAt: new Date().toLocaleString("ja-JP"),
+          groups: practiceResult.groups.map((group) => ({
+            groupNumber: group.groupNumber,
+            members: group.members,
+          })),
+          leftovers: practiceResult.leftovers,
+        },
+      ]);
+      setPracticeName("");
+    },
+    [doublesResult, practiceHistory.length, practiceName, practiceResult],
+  );
+
+  const removePractice = useCallback((id) => {
+    setPracticeHistory((prev) => prev.filter((item) => item.id !== id));
+  }, []);
+
+  const printPlan = useCallback(() => {
+    window.print();
+  }, []);
+
+  return (
+    <div className="min-h-screen bg-slate-50 p-3 sm:p-4 md:p-6 lg:p-8 print:bg-white print:p-0">
+      <div className="mx-auto max-w-7xl space-y-4 sm:space-y-6 print:max-w-none">
+        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="space-y-3 print:hidden">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">テニス練習 組み分けアプリ</h1>
+              <p className="text-sm text-slate-600 sm:text-base">
+                参加者登録、ダブルス、対人練、練習メニューをタブで行き来できます。ダブルスでは固定ペアと3人ペアも使えます。
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Badge variant="outline" className="rounded-xl px-3 py-1 text-xs sm:text-sm">
+                <Save className="mr-1 h-3.5 w-3.5" />
+                {saveStatus}
+              </Badge>
+              <Badge variant="secondary" className="rounded-xl px-3 py-1 text-xs sm:text-sm">
+                <Smartphone className="mr-1 h-3.5 w-3.5" />スマホ対応
+              </Badge>
+            </div>
+          </div>
+        </motion.div>
+
+        <Tabs defaultValue="register" className="space-y-4">
+          <TabsList className="grid w-full grid-cols-4 h-auto rounded-2xl bg-white p-1">
+            <TabsTrigger value="register" className="rounded-xl py-2">参加者登録</TabsTrigger>
+            <TabsTrigger value="doubles" className="rounded-xl py-2">ダブルス</TabsTrigger>
+            <TabsTrigger value="practice" className="rounded-xl py-2">対人練</TabsTrigger>
+            <TabsTrigger value="menu" className="rounded-xl py-2">練習メニュー</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="register">
+            <PlayerRegistration
+              sortedPlayers={sortedPlayers}
+              newName={newName}
+              setNewName={setNewName}
+              newLevel={newLevel}
+              setNewLevel={setNewLevel}
+              newYearCategory={newYearCategory}
+              setNewYearCategory={setNewYearCategory}
+              newFaculty={newFaculty}
+              setNewFaculty={setNewFaculty}
+              newRole={newRole}
+              setNewRole={setNewRole}
+              newObGeneration={newObGeneration}
+              setNewObGeneration={setNewObGeneration}
+              addPlayer={addPlayer}
+              updatePlayer={updatePlayer}
+              removePlayer={removePlayer}
+              saveCurrentRoster={saveCurrentRoster}
+              loadSavedRoster={loadSavedRoster}
+              resetTodayPresence={resetTodayPresence}
+              selectedPairIds={selectedPairIds}
+              togglePairSelection={togglePairSelection}
+            />
+
+            <SectionCard
+              title="固定ペア管理"
+              description="ダブルス用の固定ペアを作成して保存できます。選択は2人で行ってください。"
+              icon={Link2}
+              className="print:hidden mt-4"
+            >
+              <div className="space-y-4">
+                <div className="grid gap-3 md:grid-cols-[1fr_140px]">
+                  <Input
+                    value={pairTemplateName}
+                    onChange={(e) => setPairTemplateName(e.target.value)}
+                    placeholder="ペア名（任意）"
+                    className="h-11"
+                  />
+                  <Button className="rounded-2xl h-11" onClick={createFixedPair}>
+                    <Save className="mr-2 h-4 w-4" />固定ペア保存
+                  </Button>
+                </div>
+
+                {fixedPairs.length === 0 ? (
+                  <div className="rounded-2xl border border-dashed p-4 text-sm text-slate-500">
+                    固定ペアはまだありません。
+                  </div>
+                ) : (
+                  <div className="grid gap-3">
+                    {fixedPairs.map((pair) => (
+                      <div key={pair.id} className="rounded-2xl border p-3 flex items-center justify-between gap-3">
+                        <div>
+                          <div className="font-semibold">{pair.name}</div>
+                          <div className="text-sm text-slate-500">{pair.memberNames.join(" / ")}</div>
+                        </div>
+                        <Button variant="ghost" size="icon" onClick={() => removeFixedPair(pair.id)}>
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </SectionCard>
+          </TabsContent>
+
+          <TabsContent value="doubles" className="space-y-4">
+            <div className="grid gap-4 lg:gap-6 xl:grid-cols-3 print:grid-cols-1">
+              <div className="xl:col-span-2">
+                <SectionCard title="ダブルス結果" description="ダブルスではコートレベルと固定ペアを使います。">
+                  {!doublesResult ? (
+                    <div className="rounded-2xl border border-dashed p-8 text-center text-slate-500">
+                      まだダブルスを組んでいません。
+                    </div>
+                  ) : (
+                    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 print:grid-cols-2">
+                      {doublesResult.rows.map((row) => (
+                        <div key={row.courtNumber} className="rounded-2xl border p-4 bg-white">
+                          <div className="mb-3 flex items-center justify-between gap-2">
+                            <div className="font-semibold flex items-center gap-2">
+                              <Trophy className="h-4 w-4" />
+                              {row.courtNumber}面
+                            </div>
+                            <Badge variant="secondary" className="rounded-xl">{row.courtLevel}</Badge>
+                          </div>
+
+                          {row.players.length === 0 ? (
+                            <div className="text-sm text-slate-500">該当者なし</div>
+                          ) : (
+                            <div className="space-y-2">
+                              {row.pairs.map((pair, idx) => (
+                                <div key={`${row.courtNumber}-pair-${idx}`} className="rounded-xl bg-slate-50 p-3">
+                                  <div className="text-xs text-slate-500 mb-1">2人ペア{idx + 1}</div>
+                                  <div className="font-medium">{pair.join(" / ")}</div>
+                                </div>
+                              ))}
+                              {row.triples.map((pair, idx) => (
+                                <div key={`${row.courtNumber}-triple-${idx}`} className="rounded-xl bg-amber-50 p-3">
+                                  <div className="text-xs text-slate-500 mb-1">3人ペア{idx + 1}</div>
+                                  <div className="font-medium">{pair.join(" / ")}</div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {doublesResult && doublesResult.leftovers.length > 0 ? (
+                    <div className="mt-4 rounded-2xl border p-4">
+                      <div className="font-semibold mb-2">余り</div>
+                      <div className="flex flex-wrap gap-2">
+                        {doublesResult.leftovers.map((name, idx) => (
+                          <Badge key={`${name}-${idx}`} variant="outline" className="rounded-xl">{name}</Badge>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                </SectionCard>
+              </div>
+
+              <div className="space-y-4 lg:space-y-6 xl:sticky xl:top-6 self-start">
+                <SectionCard title="ダブルス設定" description="2人ペアと3人ペアの数を別々に設定できます。">
+                  <div className="space-y-4">
+                    <LabeledSelect
+                      label="使える面数"
+                      value={courtCount}
+                      onChange={syncCourtCount}
+                      options={COURT_COUNT_OPTIONS.map((n) => ({ value: n, label: `${n}面` }))}
+                    />
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <LabeledSelect
+                        label="2人ペア数"
+                        value={twoPlayerPairCount}
+                        onChange={setTwoPlayerPairCount}
+                        options={TWO_PAIR_OPTIONS}
+                      />
+                      <LabeledSelect
+                        label="3人ペア数"
+                        value={threePlayerPairCount}
+                        onChange={setThreePlayerPairCount}
+                        options={THREE_PAIR_OPTIONS}
+                      />
+                    </div>
+
+                    <div className="space-y-3">
+                      <Label>コートレベル</Label>
+                      {courts.map((court) => (
+                        <div key={court.courtNumber} className="flex items-center gap-2 rounded-2xl border p-3">
+                          <div className="w-16 text-sm font-medium">{court.courtNumber}面</div>
+                          <Select
+                            value={court.levelBand}
+                            onValueChange={(value) => updateCourtLevel(court.courtNumber, value)}
+                          >
+                            <SelectTrigger className="h-11">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {COURT_LEVEL_OPTIONS.map((option) => (
+                                <SelectItem key={option} value={option}>{option}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="rounded-2xl bg-slate-100 p-4 text-sm space-y-2">
+                      <div className="flex items-center justify-between"><span>参加者数</span><span className="font-semibold">{doublesSummary.present}</span></div>
+                      <div className="flex items-center justify-between"><span>必要人数</span><span className="font-semibold">{doublesSummary.neededPlayers}</span></div>
+                      <div className="flex items-center justify-between"><span>余り予定</span><span className="font-semibold">{doublesSummary.overflow}</span></div>
+                      <div className="flex items-center justify-between"><span>不足予定</span><span className="font-semibold">{doublesSummary.shortage}</span></div>
+                    </div>
+
+                    <div className="rounded-2xl border p-3 text-sm space-y-2">
+                      <div className="font-semibold">固定ペア</div>
+                      <div>保存した固定ペアが同じコートに入った場合は、先に2人ペアとして優先配置します。</div>
+                      <div>人数都合で不足が出たときは、3人ペアを作れます。</div>
+                    </div>
+
+                    <div className="flex flex-col gap-2">
+                      <Button className="w-full rounded-2xl h-12 text-base" onClick={runDoubles}>
+                        <Shuffle className="mr-2 h-4 w-4" />ダブルスを組む
+                      </Button>
+                      <div className="grid gap-2 sm:grid-cols-[1fr_120px]">
+                        <Input
+                          value={practiceName}
+                          onChange={(e) => setPracticeName(e.target.value)}
+                          placeholder="練習名"
+                          className="h-11"
+                        />
+                        <Button
+                          variant="secondary"
+                          className="rounded-2xl h-11"
+                          onClick={() => saveCurrentPractice("doubles")}
+                        >
+                          <Save className="mr-2 h-4 w-4" />保存
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                </SectionCard>
+              </div>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="practice" className="space-y-4">
+            <div className="grid gap-4 lg:gap-6 xl:grid-cols-3 print:grid-cols-1">
+              <div className="xl:col-span-2">
+                <SectionCard title="対人練結果" description="対人練ではコートレベルは使いません。">
+                  {!practiceResult ? (
+                    <div className="rounded-2xl border border-dashed p-8 text-center text-slate-500">
+                      まだ対人練を組んでいません。
+                    </div>
+                  ) : (
+                    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 print:grid-cols-2">
+                      {practiceResult.groups.map((group) => (
+                        <div key={group.groupNumber} className="rounded-2xl border p-4 bg-white">
+                          <div className="mb-3 flex items-center justify-between gap-2">
+                            <div className="font-semibold">{group.groupNumber}組</div>
+                            <Badge variant="secondary" className="rounded-xl">{group.groupSize}人</Badge>
+                          </div>
+                          <div className="space-y-2">
+                            {group.members.map((member, idx) => (
+                              <div key={`${group.groupNumber}-${idx}`} className="rounded-xl bg-slate-50 p-3 font-medium">
+                                {member}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </SectionCard>
+              </div>
+
+              <div className="space-y-4 lg:space-y-6 xl:sticky xl:top-6 self-start">
+                <SectionCard title="対人練設定" description="対人練は2人・3人・4人組で作れます。人数都合で混在しても対応できます。">
+                  <div className="space-y-4">
+                    <LabeledSelect
+                      label="1組の人数"
+                      value={practiceGroupSize}
+                      onChange={setPracticeGroupSize}
+                      options={PRACTICE_GROUP_OPTIONS.map((n) => ({ value: n, label: `${n}人` }))}
+                    />
+
+                    <div className="rounded-2xl bg-slate-100 p-4 text-sm space-y-2">
+                      <div className="flex items-center justify-between"><span>参加者数</span><span className="font-semibold">{practiceSummary.present}</span></div>
+                      <div className="flex items-center justify-between"><span>想定組数</span><span className="font-semibold">{practiceSummary.expectedGroups}</span></div>
+                    </div>
+
+                    <div className="flex flex-col gap-2">
+                      <Button className="w-full rounded-2xl h-12 text-base" onClick={runPractice}>
+                        <Shuffle className="mr-2 h-4 w-4" />対人練を組む
+                      </Button>
+                      <div className="grid gap-2 sm:grid-cols-[1fr_120px]">
+                        <Input
+                          value={practiceName}
+                          onChange={(e) => setPracticeName(e.target.value)}
+                          placeholder="練習名"
+                          className="h-11"
+                        />
+                        <Button
+                          variant="secondary"
+                          className="rounded-2xl h-11"
+                          onClick={() => saveCurrentPractice("practice")}
+                        >
+                          <Save className="mr-2 h-4 w-4" />保存
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                </SectionCard>
+              </div>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="menu" className="space-y-4">
+            <SectionCard
+              title="練習メニュー"
+              description="保存した練習と保存された人・固定ペアを表形式で管理します。印刷もここから行います。"
+              icon={Table2}
+            >
+              <div className="space-y-6">
+                <div className="rounded-2xl border p-4 bg-slate-50 text-sm text-slate-700">
+                  <div className="font-semibold mb-2">表形式で保存するときのおすすめ形式</div>
+                  <div>印刷しやすくするなら、1行を「1コート」または「1組」にするのが一番見やすいです。</div>
+                  <div className="mt-2">ダブルスで3人ペアがある場合も崩れないように、枠列を固定しておくのが安全です。</div>
+                  <div className="mt-2">おすすめ列は次の通りです。</div>
+                  <div className="mt-2 font-mono text-xs sm:text-sm break-all">
+                    練習名 / 種別 / コートまたは組 / レベル帯 / 枠1 / 枠2 / 枠3
+                  </div>
+                </div>
+
+                <div>
+                  <div className="font-semibold mb-3">保存済み参加者</div>
+                  <div className="overflow-x-auto rounded-2xl border">
+                    <table className="w-full border-collapse text-sm">
+                      <thead>
+                        <tr className="bg-slate-50">
+                          <th className="border p-2 text-left">選択</th>
+                          <th className="border p-2 text-left">名前</th>
+                          <th className="border p-2 text-left">レベル</th>
+                          <th className="border p-2 text-left">学年/OB</th>
+                          <th className="border p-2 text-left">役職</th>
+                          <th className="border p-2 text-left">学部</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {sortedPlayers.map((player) => (
+                          <tr key={player.id}>
+                            <td className="border p-2">
+                              <input
+                                type="checkbox"
+                                checked={selectedPairIds.includes(player.id)}
+                                onChange={() => togglePairSelection(player.id)}
+                              />
+                            </td>
+                            <td className="border p-2">{displayName(player)}</td>
+                            <td className="border p-2">{player.level}</td>
+                            <td className="border p-2">
+                              {player.yearCategory === "OB" ? `${player.obGeneration ?? "-"}期OB` : player.yearCategory}
+                            </td>
+                            <td className="border p-2">{player.role}</td>
+                            <td className="border p-2">{player.faculty}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div>
+                  <div className="font-semibold mb-3">保存済み固定ペア</div>
+                  {fixedPairs.length === 0 ? (
+                    <div className="rounded-2xl border border-dashed p-6 text-slate-500">
+                      保存した固定ペアはまだありません。
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto rounded-2xl border">
+                      <table className="w-full border-collapse text-sm">
+                        <thead>
+                          <tr className="bg-slate-50">
+                            <th className="border p-2 text-left">ペア名</th>
+                            <th className="border p-2 text-left">メンバー1</th>
+                            <th className="border p-2 text-left">メンバー2</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {fixedPairs.map((pair) => (
+                            <tr key={pair.id}>
+                              <td className="border p-2">{pair.name}</td>
+                              <td className="border p-2">{pair.memberNames[0] ?? "-"}</td>
+                              <td className="border p-2">{pair.memberNames[1] ?? "-"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+
+                <div>
+                  <div className="font-semibold mb-3">保存した練習</div>
+                  {practiceHistory.length === 0 ? (
+                    <div className="rounded-2xl border border-dashed p-6 text-slate-500">
+                      保存した練習はまだありません。
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      <div className="overflow-x-auto rounded-2xl border">
+                        <table className="w-full border-collapse text-sm">
+                          <thead>
+                            <tr className="bg-slate-50">
+                              <th className="border p-2 text-left">練習名</th>
+                              <th className="border p-2 text-left">種別</th>
+                              <th className="border p-2 text-left">コート/組</th>
+                              <th className="border p-2 text-left">レベル帯</th>
+                              <th className="border p-2 text-left">枠1</th>
+                              <th className="border p-2 text-left">枠2</th>
+                              <th className="border p-2 text-left">枠3</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {printRows.map((row, idx) => (
+                              <tr key={`${row.menu}-${row.label}-${idx}`}>
+                                <td className="border p-2">{row.menu}</td>
+                                <td className="border p-2">{row.type}</td>
+                                <td className="border p-2">{row.label}</td>
+                                <td className="border p-2">{row.level}</td>
+                                <td className="border p-2">{row.slot1}</td>
+                                <td className="border p-2">{row.slot2}</td>
+                                <td className="border p-2">{row.slot3}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+
+                      <div className="space-y-3">
+                        {practiceHistory.map((practice, idx) => (
+                          <div key={practice.id} className="rounded-2xl border p-4 flex items-center justify-between gap-3">
+                            <div>
+                              <div className="font-semibold">{idx + 1}. {practice.title}</div>
+                              <div className="text-sm text-slate-500">
+                                {practice.mode === "doubles" ? "ダブルス" : "対人練"} / 保存日時: {practice.createdAt}
+                              </div>
+                            </div>
+                            <Button variant="ghost" size="icon" onClick={() => removePractice(practice.id)}>
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex justify-end print:hidden">
+                  <Button variant="outline" className="rounded-2xl h-11" onClick={printPlan}>
+                    <Printer className="mr-2 h-4 w-4" />表を印刷する
+                  </Button>
+                </div>
+              </div>
+            </SectionCard>
+          </TabsContent>
+        </Tabs>
+      </div>
+    </div>
+  );
+}
