@@ -32,6 +32,7 @@ const COURT_COUNT_OPTIONS = [1, 2, 3, 4, 5, 6, 7];
 const LEVEL_OPTIONS = [1, 2, 3, 4];
 const TWO_PAIR_OPTIONS = [0, 1, 2, 3];
 const THREE_PAIR_OPTIONS = [0, 1, 2];
+const PAIRING_OPTIMIZATION_TRIALS = 24;
 
 function fisherYatesShuffle(arr) {
   const copy = [...arr];
@@ -113,20 +114,35 @@ function buildPastPairMap(practiceHistory) {
   const map = new Map();
 
   practiceHistory.forEach((practice) => {
-    if (practice.mode !== "doubles") return;
+    if (practice.mode === "doubles") {
+      (practice.rows || []).forEach((row) => {
+        ([...(row.pairs || []), ...(row.triples || [])]).forEach((pair) => {
+          if (pair.length < 2) return;
 
-    (practice.rows || []).forEach((row) => {
-      ([...(row.pairs || []), ...(row.triples || [])]).forEach((pair) => {
-        if (pair.length < 2) return;
+          for (let i = 0; i < pair.length; i += 1) {
+            for (let j = i + 1; j < pair.length; j += 1) {
+              const key = pairNameKey(pair[i], pair[j]);
+              map.set(key, (map.get(key) || 0) + 1);
+            }
+          }
+        });
+      });
+      return;
+    }
 
-        for (let i = 0; i < pair.length; i += 1) {
-          for (let j = i + 1; j < pair.length; j += 1) {
-            const key = pairNameKey(pair[i], pair[j]);
+    if (practice.mode === "practice") {
+      (practice.groups || []).forEach((group) => {
+        const members = group.members || [];
+        if (members.length < 2) return;
+
+        for (let i = 0; i < members.length; i += 1) {
+          for (let j = i + 1; j < members.length; j += 1) {
+            const key = pairNameKey(members[i], members[j]);
             map.set(key, (map.get(key) || 0) + 1);
           }
         }
       });
-    });
+    }
   });
 
   return map;
@@ -140,6 +156,26 @@ function repeatedPairCountByNames(names, pastPairMap) {
     }
   }
   return total;
+}
+
+function scoreMemberGroup(members, pastPairMap) {
+  return repeatedPairCountByNames(members.map((member) => member.name), pastPairMap);
+}
+
+function scoreNameGroup(names, pastPairMap) {
+  return repeatedPairCountByNames(names, pastPairMap);
+}
+
+function scorePracticeGroups(groups, pastPairMap) {
+  return groups.reduce((sum, group) => sum + scoreNameGroup(group.members, pastPairMap), 0);
+}
+
+function scoreDoublesRows(rows, pastPairMap) {
+  return rows.reduce((sum, row) => {
+    const pairScore = (row.pairs || []).reduce((pairSum, pair) => pairSum + scoreNameGroup(pair, pastPairMap), 0);
+    const tripleScore = (row.triples || []).reduce((tripleSum, triple) => tripleSum + scoreNameGroup(triple, pastPairMap), 0);
+    return sum + pairScore + tripleScore;
+  }, 0);
 }
 
 function chooseAdditionalMembers(anchor, pool, needCount, pastPairMap) {
@@ -234,73 +270,93 @@ function choosePracticeMembers(anchor, pool, needCount, pastPairMap, mode) {
 }
 
 function makePairsForCourt(players, twoPlayerPairCount, threePlayerPairCount, fixedPairs, pastPairMap) {
-  const pairs = [];
-  const triples = [];
-  const usedIds = new Set();
+  const tryBuild = () => {
+    const pairs = [];
+    const triples = [];
+    const usedIds = new Set();
 
-  fixedPairs.forEach((fixedPair) => {
-    const found = fixedPair.memberIds
-      .map((id) => players.find((p) => p.id === id))
-      .filter(Boolean);
+    fixedPairs.forEach((fixedPair) => {
+      const found = fixedPair.memberIds
+        .map((id) => players.find((p) => p.id === id))
+        .filter(Boolean);
 
-    if (found.length === 2 && !usedIds.has(found[0].id) && !usedIds.has(found[1].id)) {
-      pairs.push(found.map((p) => displayName(p)));
-      usedIds.add(found[0].id);
-      usedIds.add(found[1].id);
-    }
-  });
-
-  let available = fisherYatesShuffle(players.filter((p) => !usedIds.has(p.id)));
-
-  while (available.length > 0 && pairs.length < twoPlayerPairCount) {
-    const first = available.shift();
-    if (!first) break;
-
-    if (available.length === 0) {
-      triples.push([displayName(first)]);
-      break;
-    }
-
-    available.sort((a, b) => {
-      const aPenalty = pastPairMap.get(pairNameKey(first.name, a.name)) || 0;
-      const bPenalty = pastPairMap.get(pairNameKey(first.name, b.name)) || 0;
-      if (aPenalty !== bPenalty) return aPenalty - bPenalty;
-
-      const aDiff = Math.abs(Number(a.level) - Number(first.level));
-      const bDiff = Math.abs(Number(b.level) - Number(first.level));
-      if (aDiff !== bDiff) return aDiff - bDiff;
-
-      return Math.random() - 0.5;
+      if (found.length === 2 && !usedIds.has(found[0].id) && !usedIds.has(found[1].id)) {
+        pairs.push(found.map((p) => displayName(p)));
+        usedIds.add(found[0].id);
+        usedIds.add(found[1].id);
+      }
     });
 
-    const second = available.shift();
-    pairs.push([displayName(first), displayName(second)]);
-  }
+    let available = fisherYatesShuffle(players.filter((p) => !usedIds.has(p.id)));
 
-  while (available.length > 0 && triples.length < threePlayerPairCount) {
-    const first = available.shift();
-    if (!first) break;
+    while (available.length > 0 && pairs.length < twoPlayerPairCount) {
+      const first = available.shift();
+      if (!first) break;
 
-    const triple = [first];
-    available.sort((a, b) => {
-      const aDiff = Math.abs(Number(a.level) - Number(first.level));
-      const bDiff = Math.abs(Number(b.level) - Number(first.level));
-      if (aDiff !== bDiff) return aDiff - bDiff;
-      return Math.random() - 0.5;
-    });
+      if (available.length === 0) {
+        triples.push([displayName(first)]);
+        break;
+      }
 
-    while (triple.length < 3 && available.length > 0) {
-      triple.push(available.shift());
+      available.sort((a, b) => {
+        const aPenalty = scoreMemberGroup([first, a], pastPairMap);
+        const bPenalty = scoreMemberGroup([first, b], pastPairMap);
+        if (aPenalty !== bPenalty) return aPenalty - bPenalty;
+
+        const aDiff = Math.abs(Number(a.level) - Number(first.level));
+        const bDiff = Math.abs(Number(b.level) - Number(first.level));
+        if (aDiff !== bDiff) return aDiff - bDiff;
+
+        return Math.random() - 0.5;
+      });
+
+      const second = available.shift();
+      pairs.push([displayName(first), displayName(second)]);
     }
 
-    triples.push(triple.map((p) => displayName(p)));
-  }
+    while (available.length > 0 && triples.length < threePlayerPairCount) {
+      const first = available.shift();
+      if (!first) break;
 
-  return {
-    pairs,
-    triples,
-    leftovers: available.map((p) => displayName(p)),
+      const triple = [first];
+      available.sort((a, b) => {
+        const aPenalty = scoreMemberGroup([...triple, a], pastPairMap);
+        const bPenalty = scoreMemberGroup([...triple, b], pastPairMap);
+        if (aPenalty !== bPenalty) return aPenalty - bPenalty;
+
+        const aDiff = Math.abs(Number(a.level) - Number(first.level));
+        const bDiff = Math.abs(Number(b.level) - Number(first.level));
+        if (aDiff !== bDiff) return aDiff - bDiff;
+        return Math.random() - 0.5;
+      });
+
+      while (triple.length < 3 && available.length > 0) {
+        triple.push(available.shift());
+      }
+
+      triples.push(triple.map((p) => displayName(p)));
+    }
+
+    return {
+      pairs,
+      triples,
+      leftovers: available.map((p) => displayName(p)),
+    };
   };
+
+  let best = null;
+  let bestScore = Number.POSITIVE_INFINITY;
+
+  for (let i = 0; i < PAIRING_OPTIMIZATION_TRIALS; i += 1) {
+    const candidate = tryBuild();
+    const candidateScore = scoreDoublesRows([{ pairs: candidate.pairs, triples: candidate.triples }], pastPairMap);
+    if (candidateScore < bestScore) {
+      best = candidate;
+      bestScore = candidateScore;
+    }
+  }
+
+  return best || { pairs: [], triples: [], leftovers: [] };
 }
 
 function generateDoublesPlan(players, settings, practiceHistory, fixedPairs) {
@@ -380,30 +436,47 @@ function generateDoublesPlan(players, settings, practiceHistory, fixedPairs) {
 function generatePracticePlan(players, groupSize, practiceHistory, matchMode) {
   const active = sortByPriority(players.filter((p) => p.present));
   const pastPairMap = buildPastPairMap(practiceHistory);
-  const remaining = fisherYatesShuffle([...active]);
-  const groups = [];
-  let groupNumber = 1;
 
-  while (remaining.length > 0) {
-    const anchorPool = matchMode === "free" ? fisherYatesShuffle([...remaining]) : [...remaining];
-    const anchor = anchorPool[0] ?? null;
-    if (!anchor) break;
+  const tryBuild = () => {
+    const remaining = fisherYatesShuffle([...active]);
+    const groups = [];
+    let groupNumber = 1;
 
-    const anchorIndex = remaining.findIndex((p) => p.id === anchor.id);
-    if (anchorIndex >= 0) remaining.splice(anchorIndex, 1);
+    while (remaining.length > 0) {
+      const anchorPool = matchMode === "free" ? fisherYatesShuffle([...remaining]) : [...remaining];
+      const anchor = anchorPool[0] ?? null;
+      if (!anchor) break;
 
-    const others = choosePracticeMembers(anchor, remaining, groupSize - 1, pastPairMap, matchMode);
-    others.forEach((picked) => {
-      const idx = remaining.findIndex((p) => p.id === picked.id);
-      if (idx >= 0) remaining.splice(idx, 1);
-    });
+      const anchorIndex = remaining.findIndex((p) => p.id === anchor.id);
+      if (anchorIndex >= 0) remaining.splice(anchorIndex, 1);
 
-    const members = sortByPriority([anchor, ...others]).map((p) => displayName(p));
-    groups.push({ groupNumber, groupSize: members.length, members });
-    groupNumber += 1;
+      const others = choosePracticeMembers(anchor, remaining, groupSize - 1, pastPairMap, matchMode);
+      others.forEach((picked) => {
+        const idx = remaining.findIndex((p) => p.id === picked.id);
+        if (idx >= 0) remaining.splice(idx, 1);
+      });
+
+      const members = sortByPriority([anchor, ...others]).map((p) => displayName(p));
+      groups.push({ groupNumber, groupSize: members.length, members });
+      groupNumber += 1;
+    }
+
+    return { groups, leftovers: remaining.map((p) => displayName(p)) };
+  };
+
+  let best = null;
+  let bestScore = Number.POSITIVE_INFINITY;
+
+  for (let i = 0; i < PAIRING_OPTIMIZATION_TRIALS; i += 1) {
+    const candidate = tryBuild();
+    const candidateScore = scorePracticeGroups(candidate.groups, pastPairMap) + candidate.leftovers.length * 1000;
+    if (candidateScore < bestScore) {
+      best = candidate;
+      bestScore = candidateScore;
+    }
   }
 
-  return { groups, leftovers: [] };
+  return best || { groups: [], leftovers: [] };
 }
 
 function rehydratePlayers(players = []) {
