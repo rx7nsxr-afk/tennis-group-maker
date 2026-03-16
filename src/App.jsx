@@ -1,43 +1,17 @@
-//i love
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-  Button,
-  Input,
-  Label,
-  Badge,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
-} from "./ui";
-import {
-  Save,
-  Shuffle,
-  Printer,
-  BookOpen,
-  Plus,
-  Trash2,
-  Trophy,
-  Smartphone,
-  Users,
-  Table2,
-  Link2,
-} from "lucide-react";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Save, Shuffle, Printer, BookOpen, Plus, Trash2, Trophy, Smartphone, Users, Table2, Link2 } from "lucide-react";
 import { motion } from "framer-motion";
 
 const STORAGE_KEY = "tennis-practice-app-v2";
 const ROSTER_STORAGE_KEY = "tennis-practice-roster-v5";
-const FIXED_PAIR_STORAGE_KEY = "tennis-practice-fixed-pairs-v1";
+const FIXED_PAIR_STORAGE_KEY = "tennis-practice-fixed-pairs-v2";
 
 const FACULTY_ORDER = [
   "PP", "PL", "Z", "G", "MB", "N", "SP", "SC", "SB", "HS", "ML", "ET", "CE", "RT", "RE", "PT", "OT", "ST", "OV", "FU",
@@ -49,18 +23,27 @@ const YEAR_PRIORITY = { OB: 0, "3年": 1, "2年": 2, "1年": 3 };
 const FACULTY_PRIORITY = Object.fromEntries(FACULTY_ORDER.map((code, idx) => [code, idx]));
 const COURT_LEVEL_OPTIONS = ["1~2", "2~3", "3~4"];
 const PRACTICE_GROUP_OPTIONS = [2, 3, 4];
+const PRACTICE_MATCH_MODE_OPTIONS = [
+  { value: "strict", label: "通常（レベル差1まで）" },
+  { value: "edge-relaxed", label: "端レベル拡張（1は1〜3、4は2〜4）" },
+  { value: "free", label: "完全ランダム（誰とでも組める）" },
+];
 const COURT_COUNT_OPTIONS = [1, 2, 3, 4, 5, 6, 7];
 const LEVEL_OPTIONS = [1, 2, 3, 4];
 const TWO_PAIR_OPTIONS = [0, 1, 2, 3];
 const THREE_PAIR_OPTIONS = [0, 1, 2];
 
-function shuffle(arr) {
+function fisherYatesShuffle(arr) {
   const copy = [...arr];
   for (let i = copy.length - 1; i > 0; i -= 1) {
     const j = Math.floor(Math.random() * (i + 1));
     [copy[i], copy[j]] = [copy[j], copy[i]];
   }
   return copy;
+}
+
+function shuffle(arr) {
+  return fisherYatesShuffle(arr);
 }
 
 function displayName(player) {
@@ -178,12 +161,73 @@ function chooseAdditionalMembers(anchor, pool, needCount, pastPairMap) {
       const bDiff = Math.abs(Number(b.level) - Number(anchor.level));
       if (aDiff !== bDiff) return aDiff - bDiff;
 
-      return comparePlayers(a, b);
+      const priorityDiff = comparePlayers(a, b);
+      if (priorityDiff !== 0) return priorityDiff;
+      return Math.random() - 0.5;
     });
 
     const picked = remaining.shift();
     chosen.push(picked);
     remaining = remaining.filter((p) => p.id !== picked.id);
+  }
+
+  return chosen;
+}
+
+function canJoinPractice(anchorLevel, candidateLevel, mode) {
+  const a = Number(anchorLevel);
+  const b = Number(candidateLevel);
+
+  if (mode === "free") return true;
+  if (mode === "strict") return Math.abs(a - b) <= 1;
+
+  if (mode === "edge-relaxed") {
+    if (a === 1) return [1, 2, 3].includes(b);
+    if (a === 4) return [2, 3, 4].includes(b);
+    return Math.abs(a - b) <= 1;
+  }
+
+  return Math.abs(a - b) <= 1;
+}
+
+function canAddToPracticeGroup(anchor, chosen, candidate, mode) {
+  if (!canJoinPractice(anchor.level, candidate.level, mode)) return false;
+
+  const currentMembers = [anchor, ...chosen];
+  const hasObAlready = currentMembers.some((member) => member.yearCategory === "OB");
+
+  if (candidate.yearCategory === "OB" && hasObAlready) return false;
+  return true;
+}
+
+function choosePracticeMembers(anchor, pool, needCount, pastPairMap, mode) {
+  const chosen = [];
+  let remainingPool = shuffle(pool);
+
+  while (chosen.length < needCount && remainingPool.length > 0) {
+    const eligible = remainingPool.filter((p) => canAddToPracticeGroup(anchor, chosen, p, mode));
+    if (eligible.length === 0) break;
+
+    let remaining = shuffle(eligible);
+    remaining.sort((a, b) => {
+      const aNames = [anchor.name, ...chosen.map((x) => x.name), a.name];
+      const bNames = [anchor.name, ...chosen.map((x) => x.name), b.name];
+      const aPenalty = repeatedPairCountByNames(aNames, pastPairMap);
+      const bPenalty = repeatedPairCountByNames(bNames, pastPairMap);
+      if (aPenalty !== bPenalty) return aPenalty - bPenalty;
+
+      const aDiff = Math.abs(Number(a.level) - Number(anchor.level));
+      const bDiff = Math.abs(Number(b.level) - Number(anchor.level));
+      if (mode !== "free" && aDiff !== bDiff) return aDiff - bDiff;
+
+      const priorityDiff = comparePlayers(a, b);
+      if (priorityDiff !== 0) return priorityDiff;
+      return Math.random() - 0.5;
+    });
+
+    const picked = remaining.shift();
+    chosen.push(picked);
+    remainingPool = remainingPool.filter((p) => p.id !== picked.id);
   }
 
   return chosen;
@@ -195,8 +239,6 @@ function makePairsForCourt(players, twoPlayerPairCount, threePlayerPairCount, fi
   const usedIds = new Set();
 
   fixedPairs.forEach((fixedPair) => {
-    if (pairs.length >= twoPlayerPairCount) return;
-
     const found = fixedPair.memberIds
       .map((id) => players.find((p) => p.id === id))
       .filter(Boolean);
@@ -208,7 +250,7 @@ function makePairsForCourt(players, twoPlayerPairCount, threePlayerPairCount, fi
     }
   });
 
-  let available = players.filter((p) => !usedIds.has(p.id));
+  let available = fisherYatesShuffle(players.filter((p) => !usedIds.has(p.id)));
 
   while (available.length > 0 && pairs.length < twoPlayerPairCount) {
     const first = available.shift();
@@ -228,7 +270,7 @@ function makePairsForCourt(players, twoPlayerPairCount, threePlayerPairCount, fi
       const bDiff = Math.abs(Number(b.level) - Number(first.level));
       if (aDiff !== bDiff) return aDiff - bDiff;
 
-      return comparePlayers(a, b);
+      return Math.random() - 0.5;
     });
 
     const second = available.shift();
@@ -244,7 +286,7 @@ function makePairsForCourt(players, twoPlayerPairCount, threePlayerPairCount, fi
       const aDiff = Math.abs(Number(a.level) - Number(first.level));
       const bDiff = Math.abs(Number(b.level) - Number(first.level));
       if (aDiff !== bDiff) return aDiff - bDiff;
-      return comparePlayers(a, b);
+      return Math.random() - 0.5;
     });
 
     while (triple.length < 3 && available.length > 0) {
@@ -263,59 +305,70 @@ function makePairsForCourt(players, twoPlayerPairCount, threePlayerPairCount, fi
 
 function generateDoublesPlan(players, settings, practiceHistory, fixedPairs) {
   const active = sortByPriority(players.filter((p) => p.present));
+  const activeById = new Map(active.map((p) => [p.id, p]));
   const pastPairMap = buildPastPairMap(practiceHistory);
-  const remaining = [...active];
-  const rows = [];
 
-  settings.courts.forEach((court) => {
-    const anchor = remaining.find((p) => inCourtBand(Number(p.level), court.levelBand));
+  const usableFixedPairs = fixedPairs
+    .map((pair) => ({ ...pair, members: pair.memberIds.map((id) => activeById.get(id)).filter(Boolean) }))
+    .filter((pair) => pair.members.length === 2);
 
-    if (!anchor) {
-      rows.push({
-        courtNumber: court.courtNumber,
-        courtLevel: court.levelBand,
-        pairs: [],
-        triples: [],
-        players: [],
-        leftovers: [],
-      });
-      return;
+  const fixedMemberIds = new Set(usableFixedPairs.flatMap((pair) => pair.memberIds));
+  const remaining = fisherYatesShuffle(active.filter((p) => !fixedMemberIds.has(p.id)));
+
+  const rows = settings.courts.map((court) => ({
+    courtNumber: court.courtNumber,
+    courtLevel: court.levelBand,
+    fixedPairs: [],
+    pairs: [],
+    triples: [],
+    players: [],
+    leftovers: [],
+  }));
+
+  usableFixedPairs.forEach((pair) => {
+    const manualCourt = Number(pair.preferredCourt ?? 0);
+    const targetByManual = manualCourt > 0 ? rows.find((row) => row.courtNumber === manualCourt) : null;
+    const avgLevel = (Number(pair.members[0].level) + Number(pair.members[1].level)) / 2;
+    const preferredRow = rows.find((row) => inCourtBand(avgLevel, row.courtLevel) && row.fixedPairs.length < Number(settings.twoPlayerPairCount));
+    const fallbackRow = rows.find((row) => row.fixedPairs.length < Number(settings.twoPlayerPairCount));
+    const targetRow = (targetByManual && targetByManual.fixedPairs.length < Number(settings.twoPlayerPairCount))
+      ? targetByManual
+      : preferredRow || fallbackRow;
+    if (targetRow) targetRow.fixedPairs.push(pair);
+  });
+
+  rows.forEach((row) => {
+    const fixedPlayers = sortByPriority(row.fixedPairs.flatMap((pair) => pair.members));
+    const remainingTwoPairCount = Math.max(Number(settings.twoPlayerPairCount) - row.fixedPairs.length, 0);
+    const selectionCount = remainingTwoPairCount * 2 + Number(settings.threePlayerPairCount) * 3;
+
+    const eligibleForAnchor = fisherYatesShuffle(remaining.filter((p) => inCourtBand(Number(p.level), row.courtLevel)));
+    const anchor = selectionCount > 0 ? eligibleForAnchor[0] ?? null : null;
+
+    if (anchor) {
+      const anchorIndex = remaining.findIndex((p) => p.id === anchor.id);
+      if (anchorIndex >= 0) remaining.splice(anchorIndex, 1);
     }
 
-    const anchorIndex = remaining.findIndex((p) => p.id === anchor.id);
-    if (anchorIndex >= 0) remaining.splice(anchorIndex, 1);
-
-    const memberCount = Math.max(
-      Number(settings.twoPlayerPairCount) * 2 + Number(settings.threePlayerPairCount) * 3,
-      2,
-    );
-    const others = chooseAdditionalMembers(anchor, remaining, memberCount - 1, pastPairMap);
-
+    const others = anchor ? chooseAdditionalMembers(anchor, remaining, Math.max(selectionCount - 1, 0), pastPairMap) : [];
     others.forEach((picked) => {
       const idx = remaining.findIndex((p) => p.id === picked.id);
       if (idx >= 0) remaining.splice(idx, 1);
     });
 
-    const courtPlayers = sortByPriority([anchor, ...others]);
-    const courtFixedPairs = fixedPairs.filter((pair) =>
-      pair.memberIds.every((id) => courtPlayers.some((p) => p.id === id)),
-    );
+    const courtPlayers = sortByPriority([...fixedPlayers, ...(anchor ? [anchor] : []), ...others]);
     const pairResult = makePairsForCourt(
       courtPlayers,
       Number(settings.twoPlayerPairCount),
       Number(settings.threePlayerPairCount),
-      courtFixedPairs,
+      row.fixedPairs,
       pastPairMap,
     );
 
-    rows.push({
-      courtNumber: court.courtNumber,
-      courtLevel: court.levelBand,
-      players: courtPlayers.map((p) => displayName(p)),
-      pairs: pairResult.pairs,
-      triples: pairResult.triples,
-      leftovers: pairResult.leftovers,
-    });
+    row.players = courtPlayers.map((p) => displayName(p));
+    row.pairs = pairResult.pairs;
+    row.triples = pairResult.triples;
+    row.leftovers = pairResult.leftovers;
   });
 
   return {
@@ -324,18 +377,22 @@ function generateDoublesPlan(players, settings, practiceHistory, fixedPairs) {
   };
 }
 
-function generatePracticePlan(players, groupSize, practiceHistory) {
+function generatePracticePlan(players, groupSize, practiceHistory, matchMode) {
   const active = sortByPriority(players.filter((p) => p.present));
   const pastPairMap = buildPastPairMap(practiceHistory);
-  const remaining = [...active];
+  const remaining = fisherYatesShuffle([...active]);
   const groups = [];
   let groupNumber = 1;
 
   while (remaining.length > 0) {
-    const anchor = remaining.shift();
+    const anchorPool = matchMode === "free" ? fisherYatesShuffle([...remaining]) : [...remaining];
+    const anchor = anchorPool[0] ?? null;
     if (!anchor) break;
 
-    const others = chooseAdditionalMembers(anchor, remaining, groupSize - 1, pastPairMap);
+    const anchorIndex = remaining.findIndex((p) => p.id === anchor.id);
+    if (anchorIndex >= 0) remaining.splice(anchorIndex, 1);
+
+    const others = choosePracticeMembers(anchor, remaining, groupSize - 1, pastPairMap, matchMode);
     others.forEach((picked) => {
       const idx = remaining.findIndex((p) => p.id === picked.id);
       if (idx >= 0) remaining.splice(idx, 1);
@@ -399,12 +456,16 @@ function buildPrintableRowsFromHistory(practiceHistory) {
 }
 
 const defaultPlayers = [
-  { id: crypto.randomUUID(), name: "榎本", level: 4, yearCategory: "3年", faculty: "PP", role: "主将", obGeneration: null, present: true },
-  { id: crypto.randomUUID(), name: "田中", level: 3, yearCategory: "2年", faculty: "PP", role: "男子副将", obGeneration: null, present: true },
-  { id: crypto.randomUUID(), name: "佐藤", level: 2, yearCategory: "1年", faculty: "PL", role: "なし", obGeneration: null, present: true },
-  { id: crypto.randomUUID(), name: "鈴木", level: 2, yearCategory: "3年", faculty: "Z", role: "主務", obGeneration: null, present: true },
-  { id: crypto.randomUUID(), name: "高橋", level: 1, yearCategory: "2年", faculty: "Z", role: "会計", obGeneration: null, present: true },
-  { id: crypto.randomUUID(), name: "山本", level: 1, yearCategory: "OB", faculty: "G", role: "主将", obGeneration: 40, present: true },
+  {
+    id: crypto.randomUUID(),
+    name: "榎本",
+    level: 4,
+    yearCategory: "OB",
+    faculty: "FU",
+    role: "会計",
+    obGeneration: 62,
+    present: true,
+  },
 ];
 
 function LabeledSelect({ label, value, onChange, options, className = "h-11", renderValue }) {
@@ -662,12 +723,14 @@ export default function TennisPracticeGroupMaker() {
   const [threePlayerPairCount, setThreePlayerPairCount] = useState("0");
   const [courts, setCourts] = useState(createDefaultCourts(3));
   const [practiceGroupSize, setPracticeGroupSize] = useState("2");
+  const [practiceMatchMode, setPracticeMatchMode] = useState("strict");
   const [practiceName, setPracticeName] = useState("");
   const [practiceHistory, setPracticeHistory] = useState([]);
   const [doublesResult, setDoublesResult] = useState(null);
   const [practiceResult, setPracticeResult] = useState(null);
   const [selectedPairIds, setSelectedPairIds] = useState([]);
   const [pairTemplateName, setPairTemplateName] = useState("");
+  const [pairPreferredCourt, setPairPreferredCourt] = useState("auto");
   const [fixedPairs, setFixedPairs] = useState([]);
   const [saveStatus, setSaveStatus] = useState("未保存");
   const [loaded, setLoaded] = useState(false);
@@ -686,6 +749,7 @@ export default function TennisPracticeGroupMaker() {
         if (parsed.threePlayerPairCount !== undefined) setThreePlayerPairCount(String(parsed.threePlayerPairCount));
         if (parsed.courts) setCourts(parsed.courts);
         if (parsed.practiceGroupSize) setPracticeGroupSize(String(parsed.practiceGroupSize));
+        if (parsed.practiceMatchMode) setPracticeMatchMode(String(parsed.practiceMatchMode));
         if (parsed.practiceHistory) setPracticeHistory(parsed.practiceHistory);
       }
 
@@ -696,7 +760,7 @@ export default function TennisPracticeGroupMaker() {
 
       if (fixedPairRaw) {
         const parsedPairs = JSON.parse(fixedPairRaw);
-        if (parsedPairs.fixedPairs) setFixedPairs(parsedPairs.fixedPairs);
+        if (parsedPairs.fixedPairs) setFixedPairs(parsedPairs.fixedPairs.map((pair) => ({ ...pair, preferredCourt: pair.preferredCourt ?? null })));
       }
 
       setSaveStatus("保存データを読み込み済み");
@@ -719,6 +783,7 @@ export default function TennisPracticeGroupMaker() {
         threePlayerPairCount,
         courts,
         practiceGroupSize,
+        practiceMatchMode,
         practiceHistory,
       }),
     );
@@ -731,6 +796,7 @@ export default function TennisPracticeGroupMaker() {
     threePlayerPairCount,
     courts,
     practiceGroupSize,
+    practiceMatchMode,
     practiceHistory,
     fixedPairs,
     loaded,
@@ -854,11 +920,13 @@ export default function TennisPracticeGroupMaker() {
         name: pairTemplateName.trim() || `${pairPlayers[0].name}・${pairPlayers[1].name}`,
         memberIds: unique,
         memberNames: pairPlayers.map((p) => displayName(p)),
+        preferredCourt: pairPreferredCourt === "auto" ? null : Number(pairPreferredCourt),
       },
     ]);
     setSelectedPairIds([]);
     setPairTemplateName("");
-  }, [pairTemplateName, players, selectedPairIds]);
+    setPairPreferredCourt("auto");
+  }, [pairPreferredCourt, pairTemplateName, players, selectedPairIds]);
 
   const removeFixedPair = useCallback((id) => {
     setFixedPairs((prev) => prev.filter((pair) => pair.id !== id));
@@ -879,9 +947,9 @@ export default function TennisPracticeGroupMaker() {
   }, [courts, fixedPairs, players, practiceHistory, threePlayerPairCount, twoPlayerPairCount]);
 
   const runPractice = useCallback(() => {
-    const plan = generatePracticePlan(players, Number(practiceGroupSize), practiceHistory);
+    const plan = generatePracticePlan(players, Number(practiceGroupSize), practiceHistory, practiceMatchMode);
     setPracticeResult(plan);
-  }, [players, practiceGroupSize, practiceHistory]);
+  }, [players, practiceGroupSize, practiceHistory, practiceMatchMode]);
 
   const saveCurrentPractice = useCallback(
     (mode) => {
@@ -1000,13 +1068,24 @@ export default function TennisPracticeGroupMaker() {
               className="print:hidden mt-4"
             >
               <div className="space-y-4">
-                <div className="grid gap-3 md:grid-cols-[1fr_140px]">
+                <div className="grid gap-3 md:grid-cols-[1fr_160px_140px]">
                   <Input
                     value={pairTemplateName}
                     onChange={(e) => setPairTemplateName(e.target.value)}
                     placeholder="ペア名（任意）"
                     className="h-11"
                   />
+                  <Select value={pairPreferredCourt} onValueChange={setPairPreferredCourt}>
+                    <SelectTrigger className="h-11">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="auto">コート自動</SelectItem>
+                      {COURT_COUNT_OPTIONS.map((n) => (
+                        <SelectItem key={n} value={String(n)}>{`${n}面`}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                   <Button className="rounded-2xl h-11" onClick={createFixedPair}>
                     <Save className="mr-2 h-4 w-4" />固定ペア保存
                   </Button>
@@ -1022,7 +1101,7 @@ export default function TennisPracticeGroupMaker() {
                       <div key={pair.id} className="rounded-2xl border p-3 flex items-center justify-between gap-3">
                         <div>
                           <div className="font-semibold">{pair.name}</div>
-                          <div className="text-sm text-slate-500">{pair.memberNames.join(" / ")}</div>
+                          <div className="text-sm text-slate-500">{pair.memberNames.join(" / ")} / {pair.preferredCourt ? `${pair.preferredCourt}面優先` : "コート自動"}</div>
                         </div>
                         <Button variant="ghost" size="icon" onClick={() => removeFixedPair(pair.id)}>
                           <Trash2 className="h-4 w-4" />
@@ -1147,8 +1226,8 @@ export default function TennisPracticeGroupMaker() {
 
                     <div className="rounded-2xl border p-3 text-sm space-y-2">
                       <div className="font-semibold">固定ペア</div>
-                      <div>保存した固定ペアが同じコートに入った場合は、先に2人ペアとして優先配置します。</div>
-                      <div>人数都合で不足が出たときは、3人ペアを作れます。</div>
+                      <div>保存した固定ペアは必ず選ばれ、指定コートがある場合はそのコートへ優先配置します。</div>
+                      <div>固定ペアのメンバーは通常の優先順位抽選には参加しません。人数都合で不足が出たときは、3人ペアを作れます。</div>
                     </div>
 
                     <div className="flex flex-col gap-2">
@@ -1208,7 +1287,7 @@ export default function TennisPracticeGroupMaker() {
               </div>
 
               <div className="space-y-4 lg:space-y-6 xl:sticky xl:top-6 self-start">
-                <SectionCard title="対人練設定" description="対人練は2人・3人・4人組で作れます。人数都合で混在しても対応できます。">
+                <SectionCard title="対人練設定" description="対人練は2人・3人・4人組で作れます。人数都合で混在しても対応できます。レベル条件も選べます。">
                   <div className="space-y-4">
                     <LabeledSelect
                       label="1組の人数"
@@ -1216,6 +1295,20 @@ export default function TennisPracticeGroupMaker() {
                       onChange={setPracticeGroupSize}
                       options={PRACTICE_GROUP_OPTIONS.map((n) => ({ value: n, label: `${n}人` }))}
                     />
+
+                    <LabeledSelect
+                      label="レベル条件"
+                      value={practiceMatchMode}
+                      onChange={setPracticeMatchMode}
+                      options={PRACTICE_MATCH_MODE_OPTIONS}
+                    />
+
+                    <div className="rounded-2xl border p-3 text-sm space-y-2">
+                      <div className="font-semibold">レベル条件の意味</div>
+                      <div>通常: レベル差1まで</div>
+                      <div>端レベル拡張: Lv1は1〜3、Lv2は1〜3、Lv3は2〜4、Lv4は2〜4</div>
+                      <div>完全ランダム: レベルに関係なく誰とでも組める</div>
+                    </div>
 
                     <div className="rounded-2xl bg-slate-100 p-4 text-sm space-y-2">
                       <div className="flex items-center justify-between"><span>参加者数</span><span className="font-semibold">{practiceSummary.present}</span></div>
@@ -1255,16 +1348,6 @@ export default function TennisPracticeGroupMaker() {
               icon={Table2}
             >
               <div className="space-y-6">
-                <div className="rounded-2xl border p-4 bg-slate-50 text-sm text-slate-700">
-                  <div className="font-semibold mb-2">表形式で保存するときのおすすめ形式</div>
-                  <div>印刷しやすくするなら、1行を「1コート」または「1組」にするのが一番見やすいです。</div>
-                  <div className="mt-2">ダブルスで3人ペアがある場合も崩れないように、枠列を固定しておくのが安全です。</div>
-                  <div className="mt-2">おすすめ列は次の通りです。</div>
-                  <div className="mt-2 font-mono text-xs sm:text-sm break-all">
-                    練習名 / 種別 / コートまたは組 / レベル帯 / 枠1 / 枠2 / 枠3
-                  </div>
-                </div>
-
                 <div>
                   <div className="font-semibold mb-3">保存済み参加者</div>
                   <div className="overflow-x-auto rounded-2xl border">
@@ -1316,7 +1399,7 @@ export default function TennisPracticeGroupMaker() {
                           <tr className="bg-slate-50">
                             <th className="border p-2 text-left">ペア名</th>
                             <th className="border p-2 text-left">メンバー1</th>
-                            <th className="border p-2 text-left">メンバー2</th>
+                            <th className="border p-2 text-left">メンバー2</th><th className="border p-2 text-left">優先コート</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -1324,7 +1407,7 @@ export default function TennisPracticeGroupMaker() {
                             <tr key={pair.id}>
                               <td className="border p-2">{pair.name}</td>
                               <td className="border p-2">{pair.memberNames[0] ?? "-"}</td>
-                              <td className="border p-2">{pair.memberNames[1] ?? "-"}</td>
+                              <td className="border p-2">{pair.memberNames[1] ?? "-"}</td><td className="border p-2">{pair.preferredCourt ? `${pair.preferredCourt}面` : "自動"}</td>
                             </tr>
                           ))}
                         </tbody>
