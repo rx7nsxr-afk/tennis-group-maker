@@ -22,6 +22,153 @@ import {
 import { Save, Shuffle, Printer, BookOpen, Plus, Trash2, Trophy, Smartphone, Users, Table2, Link2 } from "lucide-react";
 import { motion } from "framer-motion";
 
+function cx(...parts) {
+  return parts.filter(Boolean).join(" ");
+}
+
+function Card({ className = "", children }) {
+  return <div className={cx("bg-white", className)}>{children}</div>;
+}
+function CardHeader({ className = "", children }) {
+  return <div className={cx("p-6 pb-4", className)}>{children}</div>;
+}
+function CardTitle({ className = "", children }) {
+  return <h2 className={cx("font-semibold text-slate-900", className)}>{children}</h2>;
+}
+function CardDescription({ className = "", children }) {
+  return <p className={cx("mt-1 text-sm text-slate-500", className)}>{children}</p>;
+}
+function CardContent({ className = "", children }) {
+  return <div className={cx("p-6 pt-0", className)}>{children}</div>;
+}
+
+function Button({ className = "", variant = "default", size, children, ...props }) {
+  const variantClass =
+    variant === "outline"
+      ? "border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+      : variant === "secondary"
+        ? "bg-slate-200 text-slate-900 hover:bg-slate-300"
+        : variant === "ghost"
+          ? "bg-transparent text-slate-700 hover:bg-slate-100"
+          : "bg-slate-900 text-white hover:bg-slate-800";
+  const sizeClass = size === "icon" ? "w-10 h-10 p-0" : "px-4 py-2";
+  return (
+    <button
+      type="button"
+      className={cx(
+        "inline-flex items-center justify-center gap-2 text-sm font-medium transition rounded-md disabled:opacity-50",
+        variantClass,
+        sizeClass,
+        className,
+      )}
+      {...props}
+    >
+      {children}
+    </button>
+  );
+}
+
+function Input({ className = "", ...props }) {
+  return (
+    <input
+      className={cx(
+        "w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-300",
+        className,
+      )}
+      {...props}
+    />
+  );
+}
+
+function Label({ className = "", children }) {
+  return <label className={cx("text-sm font-medium text-slate-700", className)}>{children}</label>;
+}
+
+function Badge({ className = "", variant = "default", children }) {
+  const variantClass =
+    variant === "outline"
+      ? "border border-slate-300 bg-white text-slate-700"
+      : variant === "secondary"
+        ? "bg-slate-100 text-slate-700"
+        : "bg-slate-900 text-white";
+  return <span className={cx("inline-flex items-center px-2.5 py-1 text-xs font-medium rounded-full", variantClass, className)}>{children}</span>;
+}
+
+const SelectItemMarker = Symbol("SelectItem");
+function SelectItem(props) {
+  return null;
+}
+SelectItem.$$type = SelectItemMarker;
+
+function flattenItems(children, acc = []) {
+  React.Children.forEach(children, (child) => {
+    if (!React.isValidElement(child)) return;
+    if (child.type?.$$type === SelectItemMarker) {
+      acc.push({ value: child.props.value, label: child.props.children });
+      return;
+    }
+    if (child.props?.children) flattenItems(child.props.children, acc);
+  });
+  return acc;
+}
+
+function Select({ value, onValueChange, children }) {
+  const items = useMemo(() => flattenItems(children), [children]);
+  return (
+    <select
+      value={value ?? ""}
+      onChange={(e) => onValueChange?.(e.target.value)}
+      className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-slate-300 h-11"
+    >
+      {items.map((item) => (
+        <option key={String(item.value)} value={String(item.value)}>
+          {item.label}
+        </option>
+      ))}
+    </select>
+  );
+}
+function SelectTrigger({ children }) {
+  return children ?? null;
+}
+function SelectValue() {
+  return null;
+}
+function SelectContent({ children }) {
+  return children ?? null;
+}
+
+const TabsContext = createContext(null);
+function Tabs({ defaultValue, className = "", children }) {
+  const [active, setActive] = useState(defaultValue);
+  return <TabsContext.Provider value={{ active, setActive }}><div className={className}>{children}</div></TabsContext.Provider>;
+}
+function TabsList({ className = "", children }) {
+  return <div className={className}>{children}</div>;
+}
+function TabsTrigger({ value, className = "", children }) {
+  const ctx = useContext(TabsContext);
+  const active = ctx?.active === value;
+  return (
+    <button
+      type="button"
+      onClick={() => ctx?.setActive(value)}
+      className={cx(
+        "text-sm font-medium rounded-xl transition-colors",
+        active ? "bg-slate-900 text-white shadow-sm" : "text-slate-700 hover:bg-slate-100",
+        className,
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+function TabsContent({ value, className = "", children }) {
+  const ctx = useContext(TabsContext);
+  if (ctx?.active !== value) return null;
+  return <div className={className}>{children}</div>;
+}
+
 const STORAGE_KEY = "tennis-practice-app-v2";
 const ROSTER_STORAGE_KEY = "tennis-practice-roster-v5";
 const FIXED_PAIR_STORAGE_KEY = "tennis-practice-fixed-pairs-v2";
@@ -45,6 +192,12 @@ const LEVEL_OPTIONS = [1, 2, 3, 4];
 const TWO_PAIR_OPTIONS = [0, 1, 2, 3];
 const THREE_PAIR_OPTIONS = [0, 1, 2];
 const PAIRING_OPTIMIZATION_TRIALS = 24;
+
+const uuid = () => (
+  typeof crypto !== "undefined" && crypto.randomUUID
+    ? crypto.randomUUID()
+    : Math.random().toString(36).slice(2)
+);
 
 function fisherYatesShuffle(arr) {
   const copy = [...arr];
@@ -170,56 +323,12 @@ function repeatedPairCountByNames(names, pastPairMap) {
   return total;
 }
 
-function scoreMemberGroup(members, pastPairMap) {
-  return repeatedPairCountByNames(members.map((member) => member.name), pastPairMap);
-}
-
 function scoreNameGroup(names, pastPairMap) {
   return repeatedPairCountByNames(names, pastPairMap);
 }
 
 function scorePracticeGroups(groups, pastPairMap) {
   return groups.reduce((sum, group) => sum + scoreNameGroup(group.members, pastPairMap), 0);
-}
-
-function scoreDoublesRows(rows, pastPairMap) {
-  return rows.reduce((sum, row) => {
-    const pairScore = (row.pairs || []).reduce((pairSum, pair) => pairSum + scoreNameGroup(pair, pastPairMap), 0);
-    const tripleScore = (row.triples || []).reduce((tripleSum, triple) => tripleSum + scoreNameGroup(triple, pastPairMap), 0);
-    return sum + pairScore + tripleScore;
-  }, 0);
-}
-
-function chooseAdditionalMembers(anchor, pool, needCount, pastPairMap) {
-  const eligible = pool.filter((p) => Math.abs(Number(p.level) - Number(anchor.level)) <= 1);
-  if (eligible.length === 0) return [];
-
-  const chosen = [];
-  let remaining = shuffle(eligible);
-
-  while (chosen.length < needCount && remaining.length > 0) {
-    remaining.sort((a, b) => {
-      const aNames = [anchor.name, ...chosen.map((x) => x.name), a.name];
-      const bNames = [anchor.name, ...chosen.map((x) => x.name), b.name];
-      const aPenalty = repeatedPairCountByNames(aNames, pastPairMap);
-      const bPenalty = repeatedPairCountByNames(bNames, pastPairMap);
-      if (aPenalty !== bPenalty) return aPenalty - bPenalty;
-
-      const aDiff = Math.abs(Number(a.level) - Number(anchor.level));
-      const bDiff = Math.abs(Number(b.level) - Number(anchor.level));
-      if (aDiff !== bDiff) return aDiff - bDiff;
-
-      const priorityDiff = comparePlayers(a, b);
-      if (priorityDiff !== 0) return priorityDiff;
-      return Math.random() - 0.5;
-    });
-
-    const picked = remaining.shift();
-    chosen.push(picked);
-    remaining = remaining.filter((p) => p.id !== picked.id);
-  }
-
-  return chosen;
 }
 
 function canJoinPractice(anchorLevel, candidateLevel, mode) {
@@ -282,27 +391,20 @@ function choosePracticeMembers(anchor, pool, needCount, pastPairMap, mode) {
 function pickBestPlayerForCourt(candidates, anchor, currentNames, pastPairMap, allowedLevels) {
   if (!candidates.length) return null;
 
-  const sorted = [...candidates].sort((a, b) => {
-    const aAllowed = allowedLevels.includes(Number(a.level)) ? 0 : 1;
-    const bAllowed = allowedLevels.includes(Number(b.level)) ? 0 : 1;
-    if (aAllowed !== bAllowed) return aAllowed - bAllowed;
-
-    const aPenalty = repeatedPairCountByNames([...currentNames, a.name], pastPairMap);
-    const bPenalty = repeatedPairCountByNames([...currentNames, b.name], pastPairMap);
-    if (aPenalty !== bPenalty) return aPenalty - bPenalty;
-
-    if (anchor) {
-      const aDiff = Math.abs(Number(a.level) - Number(anchor.level));
-      const bDiff = Math.abs(Number(b.level) - Number(anchor.level));
-      if (aDiff !== bDiff) return aDiff - bDiff;
-    }
-
-    const priorityDiff = comparePlayers(a, b);
-    if (priorityDiff !== 0) return priorityDiff;
-    return Math.random() - 0.5;
+  const scored = fisherYatesShuffle(candidates).map((player) => {
+    const allowedPenalty = allowedLevels.includes(Number(player.level)) ? 0 : 10000;
+    const repeatPenalty = repeatedPairCountByNames([...currentNames, player.name], pastPairMap) * 100;
+    const levelPenalty = anchor ? Math.abs(Number(player.level) - Number(anchor.level)) * 10 : 0;
+    return {
+      player,
+      score: allowedPenalty + repeatPenalty + levelPenalty,
+    };
   });
 
-  return sorted[0] ?? null;
+  scored.sort((a, b) => a.score - b.score || Math.random() - 0.5);
+  const top = scored.slice(0, Math.min(3, scored.length));
+  const picked = top[Math.floor(Math.random() * top.length)] ?? scored[0];
+  return picked?.player ?? null;
 }
 
 function makePairsForCourt(anchor, singles, fixedPairs, settings, pastPairMap, allowedLevels) {
@@ -348,7 +450,7 @@ function makePairsForCourt(anchor, singles, fixedPairs, settings, pastPairMap, a
     const first = pickBestPlayerForCourt(available, anchor, groups.flat().map((p) => p.name), pastPairMap, allowedLevels);
     if (!first) break;
 
-    let rest = available.filter((p) => p.id !== first.id);
+    const rest = available.filter((p) => p.id !== first.id);
     const second = pickBestPlayerForCourt(rest, first, [first.name], pastPairMap, allowedLevels);
     if (!second) break;
 
@@ -369,7 +471,7 @@ function makePairsForCourt(anchor, singles, fixedPairs, settings, pastPairMap, a
         const allowedPenalty = allowedLevels.includes(Number(candidate.level)) ? 0 : 10000;
         const repeatPenalty = repeatedPairCountByNames([...group.map((p) => p.name), candidate.name], pastPairMap);
         const anchorPenalty = anchor ? Math.abs(Number(candidate.level) - Number(anchor.level)) : 0;
-        const total = allowedPenalty + repeatPenalty * 100 + anchorPenalty * 10 + comparePlayers(candidate, candidate) * 0;
+        const total = allowedPenalty + repeatPenalty * 100 + anchorPenalty * 10;
 
         if (!bestChoice || total < bestChoice.total) {
           bestChoice = { groupIndex, candidate, total };
@@ -391,17 +493,21 @@ function makePairsForCourt(anchor, singles, fixedPairs, settings, pastPairMap, a
   };
 }
 
-function generateDoublesPlan(players, settings, practiceHistory, fixedPairs) {
-  const active = sortByPriority(players.filter((p) => p.present));
+function buildSingleDoublesPlan(players, settings, practiceHistory, fixedPairs) {
+  const active = fisherYatesShuffle(sortByPriority(players.filter((p) => p.present)));
   const activeById = new Map(active.map((p) => [p.id, p]));
   const pastPairMap = buildPastPairMap(practiceHistory);
 
-  const usableFixedPairs = fixedPairs
-    .map((pair) => ({ ...pair, members: pair.memberIds.map((id) => activeById.get(id)).filter(Boolean) }))
-    .filter((pair) => pair.members.length === 2);
+  const usableFixedPairs = fisherYatesShuffle(
+    fixedPairs
+      .map((pair) => ({ ...pair, members: pair.memberIds.map((id) => activeById.get(id)).filter(Boolean) }))
+      .filter((pair) => pair.members.length === 2),
+  );
 
   const remaining = [...active];
   const unassignedFixedPairs = [...usableFixedPairs];
+  const configuredPlayersPerCourt = Number(settings.twoPlayerPairCount) * 2 + Number(settings.threePlayerPairCount) * 3;
+  const configuredGroupCount = Number(settings.twoPlayerPairCount) + Number(settings.threePlayerPairCount);
 
   const rows = settings.courts.map((court) => ({
     courtNumber: court.courtNumber,
@@ -413,8 +519,10 @@ function generateDoublesPlan(players, settings, practiceHistory, fixedPairs) {
     leftovers: [],
     anchor: null,
     allowedLevels: [],
-    maxPlayers: Number(settings.twoPlayerPairCount) * 2 + Number(settings.threePlayerPairCount) * 3,
-    desiredGroupCount: Math.min(3, Number(settings.twoPlayerPairCount) + Number(settings.threePlayerPairCount)),
+    baseMaxPlayers: configuredPlayersPerCourt,
+    maxPlayers: Math.max(configuredPlayersPerCourt + 1, 0),
+    configuredGroupCount,
+    desiredGroupCount: Math.min(3, Math.max(configuredGroupCount, 0)),
   }));
 
   const takePlayerById = (id) => {
@@ -427,29 +535,20 @@ function generateDoublesPlan(players, settings, practiceHistory, fixedPairs) {
   rows.forEach((row) => {
     const anchor = remaining.shift() ?? null;
     if (!anchor) return;
+
     row.anchor = anchor;
     row.allowedLevels = allowedLevelsFromAnchorLevel(anchor.level);
     row.courtLevel = `Lv${row.allowedLevels.join("/")}`;
 
-    const compatibleFixed = unassignedFixedPairs
-      .filter((pair) => pair.members.every((member) => canJoinAnchorCourt(anchor.level, member.level)))
-      .sort((a, b) => {
-        const aManual = Number(a.preferredCourt ?? 0) === row.courtNumber ? 0 : 1;
-        const bManual = Number(b.preferredCourt ?? 0) === row.courtNumber ? 0 : 1;
-        if (aManual !== bManual) return aManual - bManual;
-
-        const aPenalty = repeatedPairCountByNames([anchor.name, ...a.members.map((m) => m.name)], pastPairMap);
-        const bPenalty = repeatedPairCountByNames([anchor.name, ...b.members.map((m) => m.name)], pastPairMap);
-        if (aPenalty !== bPenalty) return aPenalty - bPenalty;
-        return 0;
-      });
+    const compatibleFixed = fisherYatesShuffle(unassignedFixedPairs)
+      .filter((pair) => pair.members.every((member) => canJoinAnchorCourt(anchor.level, member.level)));
 
     let usedPlayers = 1;
     let usedGroups = 0;
 
     for (const pair of compatibleFixed) {
       if (usedGroups >= row.desiredGroupCount) break;
-      if (usedPlayers + 2 > row.maxPlayers) break;
+      if (usedPlayers + 2 > row.baseMaxPlayers) break;
       row.fixedPairs.push(pair);
       usedPlayers += 2;
       usedGroups += 1;
@@ -465,9 +564,9 @@ function generateDoublesPlan(players, settings, practiceHistory, fixedPairs) {
     const fixedPlayerIds = new Set(row.fixedPairs.flatMap((pair) => pair.memberIds));
     let selectedCount = 1 + row.fixedPairs.length * 2;
 
-    while (selectedCount < row.maxPlayers) {
+    while (selectedCount < row.baseMaxPlayers) {
       const next = pickBestPlayerForCourt(
-        remaining.filter((p) => !fixedPlayerIds.has(p.id)),
+        fisherYatesShuffle(remaining.filter((p) => !fixedPlayerIds.has(p.id))),
         row.anchor,
         [row.anchor.name, ...row.fixedPairs.flatMap((pair) => pair.members.map((m) => m.name)), ...selectedSingles.map((p) => p.name)],
         pastPairMap,
@@ -480,7 +579,7 @@ function generateDoublesPlan(players, settings, practiceHistory, fixedPairs) {
       selectedCount += 1;
     }
 
-    const pairResult = makePairsForCourt(row.anchor, selectedSingles, row.fixedPairs, settings, pastPairMap, row.allowedLevels);
+    const pairResult = makePairsForCourt(row.anchor, fisherYatesShuffle(selectedSingles), row.fixedPairs, settings, pastPairMap, row.allowedLevels);
 
     row.pairs = pairResult.pairs;
     row.triples = pairResult.triples;
@@ -508,10 +607,10 @@ function generateDoublesPlan(players, settings, practiceHistory, fixedPairs) {
     for (const row of rows) {
       const currentGroups = row.pairs.length + row.triples.length;
       const currentPlayers = row.pairs.length * 2 + row.triples.length * 3;
-      if (currentGroups >= row.desiredGroupCount || currentGroups >= 3) continue;
+      if (currentGroups >= 3) continue;
       if (currentPlayers + 2 > row.maxPlayers) continue;
 
-      const compatible = leftoverPool.filter((p) => row.anchor && canJoinAnchorCourt(row.anchor.level, p.level));
+      const compatible = fisherYatesShuffle(leftoverPool.filter((p) => row.anchor && canJoinAnchorCourt(row.anchor.level, p.level)));
       if (compatible.length < 2) continue;
 
       const first = pickBestPlayerForCourt(compatible, row.anchor, row.players, pastPairMap, row.allowedLevels);
@@ -538,7 +637,6 @@ function generateDoublesPlan(players, settings, practiceHistory, fixedPairs) {
 
   for (const leftover of [...leftoverPool]) {
     let bestRow = null;
-    let bestType = null;
     let bestIndex = -1;
     let bestScore = Number.POSITIVE_INFINITY;
 
@@ -552,13 +650,12 @@ function generateDoublesPlan(players, settings, practiceHistory, fixedPairs) {
         if (score < bestScore) {
           bestScore = score;
           bestRow = row;
-          bestType = "pair";
           bestIndex = pairIndex;
         }
       });
     });
 
-    if (bestRow && bestType === "pair") {
+    if (bestRow) {
       const pair = bestRow.pairs[bestIndex];
       bestRow.pairs.splice(bestIndex, 1);
       bestRow.triples.push([...pair, displayName(leftover)]);
@@ -572,6 +669,28 @@ function generateDoublesPlan(players, settings, practiceHistory, fixedPairs) {
     rows,
     leftovers: leftoverPool.map((p) => displayName(p)),
   };
+}
+
+function generateDoublesPlan(players, settings, practiceHistory, fixedPairs) {
+  const pairMap = buildPastPairMap(practiceHistory);
+  const candidates = [];
+
+  for (let i = 0; i < PAIRING_OPTIMIZATION_TRIALS; i += 1) {
+    const candidate = buildSingleDoublesPlan(players, settings, practiceHistory, fixedPairs);
+    const candidateScore = candidate.rows.reduce((sum, row) => {
+      const pairScore = (row.pairs || []).reduce((s, pair) => s + scoreNameGroup(pair, pairMap), 0);
+      const tripleScore = (row.triples || []).reduce((s, triple) => s + scoreNameGroup(triple, pairMap), 0);
+      return sum + pairScore + tripleScore;
+    }, 0) + candidate.leftovers.length * 1000;
+
+    candidates.push({ candidate, score: candidateScore });
+  }
+
+  candidates.sort((a, b) => a.score - b.score || Math.random() - 0.5);
+  const pickRange = Math.min(8, candidates.length);
+  const picked = candidates[Math.floor(Math.random() * pickRange)] ?? candidates[0];
+
+  return picked?.candidate || { rows: [], leftovers: [] };
 }
 
 function generatePracticePlan(players, groupSize, practiceHistory, matchMode) {
@@ -620,7 +739,7 @@ function generatePracticePlan(players, groupSize, practiceHistory, matchMode) {
 function rehydratePlayers(players = []) {
   return players.map((p) => ({
     ...p,
-    id: p.id || crypto.randomUUID(),
+    id: p.id || uuid(),
     level: Number(p.level ?? 2),
     yearCategory: p.yearCategory || "1年",
     faculty: p.faculty || "PP",
@@ -634,9 +753,7 @@ function rehydratePlayers(players = []) {
 }
 
 function createDefaultCourts(count) {
-  return Array.from({ length: count }, (_, idx) => ({
-    courtNumber: idx + 1,
-  }));
+  return Array.from({ length: count }, (_, idx) => ({ courtNumber: idx + 1 }));
 }
 
 function buildPrintableRowsFromHistory(practiceHistory) {
@@ -667,7 +784,7 @@ function buildPrintableRowsFromHistory(practiceHistory) {
 
 const defaultPlayers = [
   {
-    id: crypto.randomUUID(),
+    id: uuid(),
     name: "榎本",
     level: 4,
     yearCategory: "OB",
@@ -753,41 +870,17 @@ function PlayerRegistration(props) {
         <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 xl:grid-cols-3">
           <div className="space-y-2">
             <Label>名前</Label>
-            <Input
-              value={newName}
-              onChange={(e) => setNewName(e.target.value)}
-              placeholder="例：榎本"
-              className="h-11"
-            />
+            <Input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="例：榎本" className="h-11" />
           </div>
 
-          <LabeledSelect
-            label="レベル"
-            value={newLevel}
-            onChange={setNewLevel}
-            options={LEVEL_OPTIONS.map((n) => ({ value: n, label: String(n) }))}
-          />
-
-          <LabeledSelect
-            label="学年 / OB"
-            value={newYearCategory}
-            onChange={setNewYearCategory}
-            options={YEAR_OPTIONS}
-          />
-
+          <LabeledSelect label="レベル" value={newLevel} onChange={setNewLevel} options={LEVEL_OPTIONS.map((n) => ({ value: n, label: String(n) }))} />
+          <LabeledSelect label="学年 / OB" value={newYearCategory} onChange={setNewYearCategory} options={YEAR_OPTIONS} />
           <LabeledSelect label="役職" value={newRole} onChange={setNewRole} options={ROLE_OPTIONS} />
 
           {newYearCategory === "OB" ? (
             <div className="space-y-2">
               <Label>OB期</Label>
-              <Input
-                type="number"
-                min="1"
-                value={newObGeneration}
-                onChange={(e) => setNewObGeneration(e.target.value)}
-                placeholder="例：40"
-                className="h-11"
-              />
+              <Input type="number" min="1" value={newObGeneration} onChange={(e) => setNewObGeneration(e.target.value)} placeholder="例：40" className="h-11" />
             </div>
           ) : null}
 
@@ -801,15 +894,9 @@ function PlayerRegistration(props) {
         </div>
 
         <div className="flex flex-wrap gap-2">
-          <Button variant="outline" className="rounded-2xl h-11" onClick={saveCurrentRoster}>
-            <Save className="mr-2 h-4 w-4" />参加者を保存
-          </Button>
-          <Button variant="outline" className="rounded-2xl h-11" onClick={loadSavedRoster}>
-            <BookOpen className="mr-2 h-4 w-4" />保存済み参加者を読込
-          </Button>
-          <Button variant="outline" className="rounded-2xl h-11" onClick={resetTodayPresence}>
-            全員参加に戻す
-          </Button>
+          <Button variant="outline" className="rounded-2xl h-11" onClick={saveCurrentRoster}><Save className="mr-2 h-4 w-4" />参加者を保存</Button>
+          <Button variant="outline" className="rounded-2xl h-11" onClick={loadSavedRoster}><BookOpen className="mr-2 h-4 w-4" />保存済み参加者を読込</Button>
+          <Button variant="outline" className="rounded-2xl h-11" onClick={resetTodayPresence}>全員参加に戻す</Button>
         </div>
 
         <div className="grid gap-3">
@@ -817,66 +904,36 @@ function PlayerRegistration(props) {
             <div key={player.id} className="rounded-2xl border bg-white p-3 sm:p-4">
               <div className="grid gap-3 md:grid-cols-[48px_1fr_90px_110px_120px_120px_120px_90px_44px] items-center">
                 <div className="flex justify-center">
-                  <input
-                    type="checkbox"
-                    checked={selectedPairIds.includes(player.id)}
-                    onChange={() => togglePairSelection(player.id)}
-                  />
+                  <input type="checkbox" checked={selectedPairIds.includes(player.id)} onChange={() => togglePairSelection(player.id)} />
                 </div>
 
-                <Input
-                  value={player.name}
-                  onChange={(e) => updatePlayer(player.id, { name: e.target.value })}
-                  className="h-11"
-                />
+                <Input value={player.name} onChange={(e) => updatePlayer(player.id, { name: e.target.value })} className="h-11" />
 
-                <Select
-                  value={String(player.level)}
-                  onValueChange={(v) => updatePlayer(player.id, { level: Number(v) })}
-                >
-                  <SelectTrigger className="h-11">
-                    <SelectValue />
-                  </SelectTrigger>
+                <Select value={String(player.level)} onValueChange={(v) => updatePlayer(player.id, { level: Number(v) })}>
+                  <SelectTrigger className="h-11"><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    {LEVEL_OPTIONS.map((n) => (
-                      <SelectItem key={n} value={String(n)}>{`Lv${n}`}</SelectItem>
-                    ))}
+                    {LEVEL_OPTIONS.map((n) => <SelectItem key={n} value={String(n)}>{`Lv${n}`}</SelectItem>)}
                   </SelectContent>
                 </Select>
 
-                <Select
-                  value={player.yearCategory}
-                  onValueChange={(v) => updatePlayer(player.id, { yearCategory: v })}
-                >
-                  <SelectTrigger className="h-11">
-                    <SelectValue />
-                  </SelectTrigger>
+                <Select value={player.yearCategory} onValueChange={(v) => updatePlayer(player.id, { yearCategory: v })}>
+                  <SelectTrigger className="h-11"><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    {YEAR_OPTIONS.map((year) => (
-                      <SelectItem key={year} value={year}>{year}</SelectItem>
-                    ))}
+                    {YEAR_OPTIONS.map((year) => <SelectItem key={year} value={year}>{year}</SelectItem>)}
                   </SelectContent>
                 </Select>
 
                 <Select value={player.role} onValueChange={(v) => updatePlayer(player.id, { role: v })}>
-                  <SelectTrigger className="h-11">
-                    <SelectValue />
-                  </SelectTrigger>
+                  <SelectTrigger className="h-11"><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    {ROLE_OPTIONS.map((role) => (
-                      <SelectItem key={role} value={role}>{role}</SelectItem>
-                    ))}
+                    {ROLE_OPTIONS.map((role) => <SelectItem key={role} value={role}>{role}</SelectItem>)}
                   </SelectContent>
                 </Select>
 
                 <Select value={player.faculty} onValueChange={(v) => updatePlayer(player.id, { faculty: v })}>
-                  <SelectTrigger className="h-11">
-                    <SelectValue />
-                  </SelectTrigger>
+                  <SelectTrigger className="h-11"><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    {FACULTY_ORDER.map((code) => (
-                      <SelectItem key={code} value={code}>{code}</SelectItem>
-                    ))}
+                    {FACULTY_ORDER.map((code) => <SelectItem key={code} value={code}>{code}</SelectItem>)}
                   </SelectContent>
                 </Select>
 
@@ -885,25 +942,15 @@ function PlayerRegistration(props) {
                     type="number"
                     min="1"
                     value={player.obGeneration ?? ""}
-                    onChange={(e) =>
-                      updatePlayer(player.id, {
-                        obGeneration: e.target.value === "" ? null : Number(e.target.value),
-                      })
-                    }
+                    onChange={(e) => updatePlayer(player.id, { obGeneration: e.target.value === "" ? null : Number(e.target.value) })}
                     placeholder="OB期"
                     className="h-11"
                   />
                 ) : (
-                  <div className="h-11 rounded-2xl border bg-slate-50 px-3 flex items-center text-sm text-slate-400">
-                    OB以外は期なし
-                  </div>
+                  <div className="h-11 rounded-2xl border bg-slate-50 px-3 flex items-center text-sm text-slate-400">OB以外は期なし</div>
                 )}
 
-                <Button
-                  variant={player.present ? "default" : "outline"}
-                  className="h-11 rounded-2xl"
-                  onClick={() => updatePlayer(player.id, { present: !player.present })}
-                >
+                <Button variant={player.present ? "default" : "outline"} className="h-11 rounded-2xl" onClick={() => updatePlayer(player.id, { present: !player.present })}>
                   {player.present ? "参加" : "欠席"}
                 </Button>
 
@@ -999,18 +1046,7 @@ export default function TennisPracticeGroupMaker() {
     );
     localStorage.setItem(FIXED_PAIR_STORAGE_KEY, JSON.stringify({ fixedPairs }));
     setSaveStatus("自動保存済み");
-  }, [
-    players,
-    courtCount,
-    twoPlayerPairCount,
-    threePlayerPairCount,
-    courts,
-    practiceGroupSize,
-    practiceMatchMode,
-    practiceHistory,
-    fixedPairs,
-    loaded,
-  ]);
+  }, [players, courtCount, twoPlayerPairCount, threePlayerPairCount, courts, practiceGroupSize, practiceMatchMode, practiceHistory, fixedPairs, loaded]);
 
   const sortedPlayers = useMemo(() => sortByPriority(players), [players]);
   const presentPlayers = useMemo(() => sortByPriority(players.filter((p) => p.present)), [players]);
@@ -1040,7 +1076,6 @@ export default function TennisPracticeGroupMaker() {
     setCourts(createDefaultCourts(n));
   }, []);
 
-  
   const addPlayer = useCallback(() => {
     const name = newName.trim();
     if (!name) return;
@@ -1050,7 +1085,7 @@ export default function TennisPracticeGroupMaker() {
       sortByPriority([
         ...prev,
         {
-          id: crypto.randomUUID(),
+          id: uuid(),
           name,
           level: Number(newLevel),
           yearCategory: newYearCategory,
@@ -1120,7 +1155,7 @@ export default function TennisPracticeGroupMaker() {
     setFixedPairs((prev) => [
       ...prev,
       {
-        id: crypto.randomUUID(),
+        id: uuid(),
         name: pairTemplateName.trim() || `${pairPlayers[0].name}・${pairPlayers[1].name}`,
         memberIds: unique,
         memberNames: pairPlayers.map((p) => displayName(p)),
@@ -1155,51 +1190,45 @@ export default function TennisPracticeGroupMaker() {
     setPracticeResult(plan);
   }, [players, practiceGroupSize, practiceHistory, practiceMatchMode]);
 
-  const saveCurrentPractice = useCallback(
-    (mode) => {
-      const title = practiceName.trim() || `練習 ${practiceHistory.length + 1}`;
+  const saveCurrentPractice = useCallback((mode) => {
+    const title = practiceName.trim() || `練習 ${practiceHistory.length + 1}`;
 
-      if (mode === "doubles") {
-        if (!doublesResult) return;
-        setPracticeHistory((prev) => [
-          ...prev,
-          {
-            id: crypto.randomUUID(),
-            title,
-            mode: "doubles",
-            createdAt: new Date().toLocaleString("ja-JP"),
-            rows: doublesResult.rows.map((row) => ({
-              courtNumber: row.courtNumber,
-              courtLevel: row.courtLevel,
-              pairs: row.pairs,
-              triples: row.triples,
-            })),
-            leftovers: doublesResult.leftovers,
-          },
-        ]);
-        setPracticeName("");
-        return;
-      }
-
-      if (!practiceResult) return;
+    if (mode === "doubles") {
+      if (!doublesResult) return;
       setPracticeHistory((prev) => [
         ...prev,
         {
-          id: crypto.randomUUID(),
+          id: uuid(),
           title,
-          mode: "practice",
+          mode: "doubles",
           createdAt: new Date().toLocaleString("ja-JP"),
-          groups: practiceResult.groups.map((group) => ({
-            groupNumber: group.groupNumber,
-            members: group.members,
+          rows: doublesResult.rows.map((row) => ({
+            courtNumber: row.courtNumber,
+            courtLevel: row.courtLevel,
+            pairs: row.pairs,
+            triples: row.triples,
           })),
-          leftovers: practiceResult.leftovers,
+          leftovers: doublesResult.leftovers,
         },
       ]);
       setPracticeName("");
-    },
-    [doublesResult, practiceHistory.length, practiceName, practiceResult],
-  );
+      return;
+    }
+
+    if (!practiceResult) return;
+    setPracticeHistory((prev) => [
+      ...prev,
+      {
+        id: uuid(),
+        title,
+        mode: "practice",
+        createdAt: new Date().toLocaleString("ja-JP"),
+        groups: practiceResult.groups.map((group) => ({ groupNumber: group.groupNumber, members: group.members })),
+        leftovers: practiceResult.leftovers,
+      },
+    ]);
+    setPracticeName("");
+  }, [doublesResult, practiceHistory.length, practiceName, practiceResult]);
 
   const removePractice = useCallback((id) => {
     setPracticeHistory((prev) => prev.filter((item) => item.id !== id));
@@ -1216,18 +1245,11 @@ export default function TennisPracticeGroupMaker() {
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">テニス練習 組み分けアプリ</h1>
-              <p className="text-sm text-slate-600 sm:text-base">
-                参加者登録、ダブルス、対人練、練習メニューをタブで行き来できます。ダブルスでは固定ペアと3人ペアも使えます。
-              </p>
+              <p className="text-sm text-slate-600 sm:text-base">参加者登録、ダブルス、対人練、練習メニューをタブで行き来できます。ダブルスでは固定ペアと3人ペアも使えます。</p>
             </div>
             <div className="flex flex-wrap gap-2">
-              <Badge variant="outline" className="rounded-xl px-3 py-1 text-xs sm:text-sm">
-                <Save className="mr-1 h-3.5 w-3.5" />
-                {saveStatus}
-              </Badge>
-              <Badge variant="secondary" className="rounded-xl px-3 py-1 text-xs sm:text-sm">
-                <Smartphone className="mr-1 h-3.5 w-3.5" />スマホ対応
-              </Badge>
+              <Badge variant="outline" className="rounded-xl px-3 py-1 text-xs sm:text-sm"><Save className="mr-1 h-3.5 w-3.5" />{saveStatus}</Badge>
+              <Badge variant="secondary" className="rounded-xl px-3 py-1 text-xs sm:text-sm"><Smartphone className="mr-1 h-3.5 w-3.5" />スマホ対応</Badge>
             </div>
           </div>
         </motion.div>
@@ -1265,40 +1287,22 @@ export default function TennisPracticeGroupMaker() {
               togglePairSelection={togglePairSelection}
             />
 
-            <SectionCard
-              title="固定ペア管理"
-              description="ダブルス用の固定ペアを作成して保存できます。選択は2人で行ってください。"
-              icon={Link2}
-              className="print:hidden mt-4"
-            >
+            <SectionCard title="固定ペア管理" description="ダブルス用の固定ペアを作成して保存できます。選択は2人で行ってください。" icon={Link2} className="print:hidden mt-4">
               <div className="space-y-4">
                 <div className="grid gap-3 md:grid-cols-[1fr_160px_140px]">
-                  <Input
-                    value={pairTemplateName}
-                    onChange={(e) => setPairTemplateName(e.target.value)}
-                    placeholder="ペア名（任意）"
-                    className="h-11"
-                  />
+                  <Input value={pairTemplateName} onChange={(e) => setPairTemplateName(e.target.value)} placeholder="ペア名（任意）" className="h-11" />
                   <Select value={pairPreferredCourt} onValueChange={setPairPreferredCourt}>
-                    <SelectTrigger className="h-11">
-                      <SelectValue />
-                    </SelectTrigger>
+                    <SelectTrigger className="h-11"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="auto">コート自動</SelectItem>
-                      {COURT_COUNT_OPTIONS.map((n) => (
-                        <SelectItem key={n} value={String(n)}>{`${n}面`}</SelectItem>
-                      ))}
+                      {COURT_COUNT_OPTIONS.map((n) => <SelectItem key={n} value={String(n)}>{`${n}面`}</SelectItem>)}
                     </SelectContent>
                   </Select>
-                  <Button className="rounded-2xl h-11" onClick={createFixedPair}>
-                    <Save className="mr-2 h-4 w-4" />固定ペア保存
-                  </Button>
+                  <Button className="rounded-2xl h-11" onClick={createFixedPair}><Save className="mr-2 h-4 w-4" />固定ペア保存</Button>
                 </div>
 
                 {fixedPairs.length === 0 ? (
-                  <div className="rounded-2xl border border-dashed p-4 text-sm text-slate-500">
-                    固定ペアはまだありません。
-                  </div>
+                  <div className="rounded-2xl border border-dashed p-4 text-sm text-slate-500">固定ペアはまだありません。</div>
                 ) : (
                   <div className="grid gap-3">
                     {fixedPairs.map((pair) => (
@@ -1307,9 +1311,7 @@ export default function TennisPracticeGroupMaker() {
                           <div className="font-semibold">{pair.name}</div>
                           <div className="text-sm text-slate-500">{pair.memberNames.join(" / ")} / {pair.preferredCourt ? `${pair.preferredCourt}面優先` : "コート自動"}</div>
                         </div>
-                        <Button variant="ghost" size="icon" onClick={() => removeFixedPair(pair.id)}>
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
+                        <Button variant="ghost" size="icon" onClick={() => removeFixedPair(pair.id)}><Trash2 className="h-4 w-4" /></Button>
                       </div>
                     ))}
                   </div>
@@ -1323,18 +1325,13 @@ export default function TennisPracticeGroupMaker() {
               <div className="xl:col-span-2">
                 <SectionCard title="ダブルス結果" description="ダブルスでは各コートの先頭に入る人を基準に、入れるレベル帯が自動で決まります。">
                   {!doublesResult ? (
-                    <div className="rounded-2xl border border-dashed p-8 text-center text-slate-500">
-                      まだダブルスを組んでいません。
-                    </div>
+                    <div className="rounded-2xl border border-dashed p-8 text-center text-slate-500">まだダブルスを組んでいません。</div>
                   ) : (
                     <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 print:grid-cols-2">
                       {doublesResult.rows.map((row) => (
                         <div key={row.courtNumber} className="rounded-2xl border p-4 bg-white">
                           <div className="mb-3 flex items-center justify-between gap-2">
-                            <div className="font-semibold flex items-center gap-2">
-                              <Trophy className="h-4 w-4" />
-                              {row.courtNumber}面
-                            </div>
+                            <div className="font-semibold flex items-center gap-2"><Trophy className="h-4 w-4" />{row.courtNumber}面</div>
                             <Badge variant="secondary" className="rounded-xl">{row.courtLevel}</Badge>
                           </div>
 
@@ -1365,9 +1362,7 @@ export default function TennisPracticeGroupMaker() {
                     <div className="mt-4 rounded-2xl border p-4">
                       <div className="font-semibold mb-2">余り</div>
                       <div className="flex flex-wrap gap-2">
-                        {doublesResult.leftovers.map((name, idx) => (
-                          <Badge key={`${name}-${idx}`} variant="outline" className="rounded-xl">{name}</Badge>
-                        ))}
+                        {doublesResult.leftovers.map((name, idx) => <Badge key={`${name}-${idx}`} variant="outline" className="rounded-xl">{name}</Badge>)}
                       </div>
                     </div>
                   ) : null}
@@ -1377,29 +1372,14 @@ export default function TennisPracticeGroupMaker() {
               <div className="space-y-4 lg:space-y-6 xl:sticky xl:top-6 self-start">
                 <SectionCard title="ダブルス設定" description="2人ペアと3人ペアの数を別々に設定できます。">
                   <div className="space-y-4">
-                    <LabeledSelect
-                      label="使える面数"
-                      value={courtCount}
-                      onChange={syncCourtCount}
-                      options={COURT_COUNT_OPTIONS.map((n) => ({ value: n, label: `${n}面` }))}
-                    />
+                    <LabeledSelect label="使える面数" value={courtCount} onChange={syncCourtCount} options={COURT_COUNT_OPTIONS.map((n) => ({ value: n, label: `${n}面` }))} />
 
                     <div className="grid grid-cols-2 gap-3">
-                      <LabeledSelect
-                        label="2人ペア数"
-                        value={twoPlayerPairCount}
-                        onChange={setTwoPlayerPairCount}
-                        options={TWO_PAIR_OPTIONS}
-                      />
-                      <LabeledSelect
-                        label="3人ペア数"
-                        value={threePlayerPairCount}
-                        onChange={setThreePlayerPairCount}
-                        options={THREE_PAIR_OPTIONS}
-                      />
+                      <LabeledSelect label="2人ペア数" value={twoPlayerPairCount} onChange={setTwoPlayerPairCount} options={TWO_PAIR_OPTIONS} />
+                      <LabeledSelect label="3人ペア数" value={threePlayerPairCount} onChange={setThreePlayerPairCount} options={THREE_PAIR_OPTIONS} />
                     </div>
 
-                                        <div className="rounded-2xl bg-slate-100 p-4 text-sm space-y-2">
+                    <div className="rounded-2xl bg-slate-100 p-4 text-sm space-y-2">
                       <div className="flex items-center justify-between"><span>参加者数</span><span className="font-semibold">{doublesSummary.present}</span></div>
                       <div className="flex items-center justify-between"><span>必要人数</span><span className="font-semibold">{doublesSummary.neededPlayers}</span></div>
                       <div className="flex items-center justify-between"><span>余り予定</span><span className="font-semibold">{doublesSummary.overflow}</span></div>
@@ -1413,23 +1393,10 @@ export default function TennisPracticeGroupMaker() {
                     </div>
 
                     <div className="flex flex-col gap-2">
-                      <Button className="w-full rounded-2xl h-12 text-base" onClick={runDoubles}>
-                        <Shuffle className="mr-2 h-4 w-4" />ダブルスを組む
-                      </Button>
+                      <Button className="w-full rounded-2xl h-12 text-base" onClick={runDoubles}><Shuffle className="mr-2 h-4 w-4" />ダブルスを組む</Button>
                       <div className="grid gap-2 sm:grid-cols-[1fr_120px]">
-                        <Input
-                          value={practiceName}
-                          onChange={(e) => setPracticeName(e.target.value)}
-                          placeholder="練習名"
-                          className="h-11"
-                        />
-                        <Button
-                          variant="secondary"
-                          className="rounded-2xl h-11"
-                          onClick={() => saveCurrentPractice("doubles")}
-                        >
-                          <Save className="mr-2 h-4 w-4" />保存
-                        </Button>
+                        <Input value={practiceName} onChange={(e) => setPracticeName(e.target.value)} placeholder="練習名" className="h-11" />
+                        <Button variant="secondary" className="rounded-2xl h-11" onClick={() => saveCurrentPractice("doubles")}><Save className="mr-2 h-4 w-4" />保存</Button>
                       </div>
                     </div>
                   </div>
@@ -1443,9 +1410,7 @@ export default function TennisPracticeGroupMaker() {
               <div className="xl:col-span-2">
                 <SectionCard title="対人練結果" description="対人練ではコートレベルは使いません。">
                   {!practiceResult ? (
-                    <div className="rounded-2xl border border-dashed p-8 text-center text-slate-500">
-                      まだ対人練を組んでいません。
-                    </div>
+                    <div className="rounded-2xl border border-dashed p-8 text-center text-slate-500">まだ対人練を組んでいません。</div>
                   ) : (
                     <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 print:grid-cols-2">
                       {practiceResult.groups.map((group) => (
@@ -1455,11 +1420,7 @@ export default function TennisPracticeGroupMaker() {
                             <Badge variant="secondary" className="rounded-xl">{group.groupSize}人</Badge>
                           </div>
                           <div className="space-y-2">
-                            {group.members.map((member, idx) => (
-                              <div key={`${group.groupNumber}-${idx}`} className="rounded-xl bg-slate-50 p-3 font-medium">
-                                {member}
-                              </div>
-                            ))}
+                            {group.members.map((member, idx) => <div key={`${group.groupNumber}-${idx}`} className="rounded-xl bg-slate-50 p-3 font-medium">{member}</div>)}
                           </div>
                         </div>
                       ))}
@@ -1471,19 +1432,8 @@ export default function TennisPracticeGroupMaker() {
               <div className="space-y-4 lg:space-y-6 xl:sticky xl:top-6 self-start">
                 <SectionCard title="対人練設定" description="対人練は2人・3人・4人組で作れます。人数都合で混在しても対応できます。レベル条件も選べます。">
                   <div className="space-y-4">
-                    <LabeledSelect
-                      label="1組の人数"
-                      value={practiceGroupSize}
-                      onChange={setPracticeGroupSize}
-                      options={PRACTICE_GROUP_OPTIONS.map((n) => ({ value: n, label: `${n}人` }))}
-                    />
-
-                    <LabeledSelect
-                      label="レベル条件"
-                      value={practiceMatchMode}
-                      onChange={setPracticeMatchMode}
-                      options={PRACTICE_MATCH_MODE_OPTIONS}
-                    />
+                    <LabeledSelect label="1組の人数" value={practiceGroupSize} onChange={setPracticeGroupSize} options={PRACTICE_GROUP_OPTIONS.map((n) => ({ value: n, label: `${n}人` }))} />
+                    <LabeledSelect label="レベル条件" value={practiceMatchMode} onChange={setPracticeMatchMode} options={PRACTICE_MATCH_MODE_OPTIONS} />
 
                     <div className="rounded-2xl border p-3 text-sm space-y-2">
                       <div className="font-semibold">レベル条件の意味</div>
@@ -1498,23 +1448,10 @@ export default function TennisPracticeGroupMaker() {
                     </div>
 
                     <div className="flex flex-col gap-2">
-                      <Button className="w-full rounded-2xl h-12 text-base" onClick={runPractice}>
-                        <Shuffle className="mr-2 h-4 w-4" />対人練を組む
-                      </Button>
+                      <Button className="w-full rounded-2xl h-12 text-base" onClick={runPractice}><Shuffle className="mr-2 h-4 w-4" />対人練を組む</Button>
                       <div className="grid gap-2 sm:grid-cols-[1fr_120px]">
-                        <Input
-                          value={practiceName}
-                          onChange={(e) => setPracticeName(e.target.value)}
-                          placeholder="練習名"
-                          className="h-11"
-                        />
-                        <Button
-                          variant="secondary"
-                          className="rounded-2xl h-11"
-                          onClick={() => saveCurrentPractice("practice")}
-                        >
-                          <Save className="mr-2 h-4 w-4" />保存
-                        </Button>
+                        <Input value={practiceName} onChange={(e) => setPracticeName(e.target.value)} placeholder="練習名" className="h-11" />
+                        <Button variant="secondary" className="rounded-2xl h-11" onClick={() => saveCurrentPractice("practice")}><Save className="mr-2 h-4 w-4" />保存</Button>
                       </div>
                     </div>
                   </div>
@@ -1524,11 +1461,7 @@ export default function TennisPracticeGroupMaker() {
           </TabsContent>
 
           <TabsContent value="menu" className="space-y-4">
-            <SectionCard
-              title="練習メニュー"
-              description="保存した練習と保存された人・固定ペアを表形式で管理します。印刷もここから行います。"
-              icon={Table2}
-            >
+            <SectionCard title="練習メニュー" description="保存した練習と保存された人・固定ペアを表形式で管理します。印刷もここから行います。" icon={Table2}>
               <div className="space-y-6">
                 <div>
                   <div className="font-semibold mb-3">保存済み参加者</div>
@@ -1547,18 +1480,10 @@ export default function TennisPracticeGroupMaker() {
                       <tbody>
                         {sortedPlayers.map((player) => (
                           <tr key={player.id}>
-                            <td className="border p-2">
-                              <input
-                                type="checkbox"
-                                checked={selectedPairIds.includes(player.id)}
-                                onChange={() => togglePairSelection(player.id)}
-                              />
-                            </td>
+                            <td className="border p-2"><input type="checkbox" checked={selectedPairIds.includes(player.id)} onChange={() => togglePairSelection(player.id)} /></td>
                             <td className="border p-2">{displayName(player)}</td>
                             <td className="border p-2">{player.level}</td>
-                            <td className="border p-2">
-                              {player.yearCategory === "OB" ? `${player.obGeneration ?? "-"}期OB` : player.yearCategory}
-                            </td>
+                            <td className="border p-2">{player.yearCategory === "OB" ? `${player.obGeneration ?? "-"}期OB` : player.yearCategory}</td>
                             <td className="border p-2">{player.role}</td>
                             <td className="border p-2">{player.faculty}</td>
                           </tr>
@@ -1571,9 +1496,7 @@ export default function TennisPracticeGroupMaker() {
                 <div>
                   <div className="font-semibold mb-3">保存済み固定ペア</div>
                   {fixedPairs.length === 0 ? (
-                    <div className="rounded-2xl border border-dashed p-6 text-slate-500">
-                      保存した固定ペアはまだありません。
-                    </div>
+                    <div className="rounded-2xl border border-dashed p-6 text-slate-500">保存した固定ペアはまだありません。</div>
                   ) : (
                     <div className="overflow-x-auto rounded-2xl border">
                       <table className="w-full border-collapse text-sm">
@@ -1581,7 +1504,8 @@ export default function TennisPracticeGroupMaker() {
                           <tr className="bg-slate-50">
                             <th className="border p-2 text-left">ペア名</th>
                             <th className="border p-2 text-left">メンバー1</th>
-                            <th className="border p-2 text-left">メンバー2</th><th className="border p-2 text-left">優先コート</th>
+                            <th className="border p-2 text-left">メンバー2</th>
+                            <th className="border p-2 text-left">優先コート</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -1589,7 +1513,8 @@ export default function TennisPracticeGroupMaker() {
                             <tr key={pair.id}>
                               <td className="border p-2">{pair.name}</td>
                               <td className="border p-2">{pair.memberNames[0] ?? "-"}</td>
-                              <td className="border p-2">{pair.memberNames[1] ?? "-"}</td><td className="border p-2">{pair.preferredCourt ? `${pair.preferredCourt}面` : "自動"}</td>
+                              <td className="border p-2">{pair.memberNames[1] ?? "-"}</td>
+                              <td className="border p-2">{pair.preferredCourt ? `${pair.preferredCourt}面` : "自動"}</td>
                             </tr>
                           ))}
                         </tbody>
@@ -1601,9 +1526,7 @@ export default function TennisPracticeGroupMaker() {
                 <div>
                   <div className="font-semibold mb-3">保存した練習</div>
                   {practiceHistory.length === 0 ? (
-                    <div className="rounded-2xl border border-dashed p-6 text-slate-500">
-                      保存した練習はまだありません。
-                    </div>
+                    <div className="rounded-2xl border border-dashed p-6 text-slate-500">保存した練習はまだありません。</div>
                   ) : (
                     <div className="space-y-4">
                       <div className="overflow-x-auto rounded-2xl border">
@@ -1640,13 +1563,9 @@ export default function TennisPracticeGroupMaker() {
                           <div key={practice.id} className="rounded-2xl border p-4 flex items-center justify-between gap-3">
                             <div>
                               <div className="font-semibold">{idx + 1}. {practice.title}</div>
-                              <div className="text-sm text-slate-500">
-                                {practice.mode === "doubles" ? "ダブルス" : "対人練"} / 保存日時: {practice.createdAt}
-                              </div>
+                              <div className="text-sm text-slate-500">{practice.mode === "doubles" ? "ダブルス" : "対人練"} / 保存日時: {practice.createdAt}</div>
                             </div>
-                            <Button variant="ghost" size="icon" onClick={() => removePractice(practice.id)}>
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
+                            <Button variant="ghost" size="icon" onClick={() => removePractice(practice.id)}><Trash2 className="h-4 w-4" /></Button>
                           </div>
                         ))}
                       </div>
@@ -1655,9 +1574,7 @@ export default function TennisPracticeGroupMaker() {
                 </div>
 
                 <div className="flex justify-end print:hidden">
-                  <Button variant="outline" className="rounded-2xl h-11" onClick={printPlan}>
-                    <Printer className="mr-2 h-4 w-4" />表を印刷する
-                  </Button>
+                  <Button variant="outline" className="rounded-2xl h-11" onClick={printPlan}><Printer className="mr-2 h-4 w-4" />表を印刷する</Button>
                 </div>
               </div>
             </SectionCard>
