@@ -279,94 +279,116 @@ function choosePracticeMembers(anchor, pool, needCount, pastPairMap, mode) {
   return chosen;
 }
 
-function makePairsForCourt(players, twoPlayerPairCount, threePlayerPairCount, fixedPairs, pastPairMap) {
-  const tryBuild = () => {
-    const pairs = [];
-    const triples = [];
-    const usedIds = new Set();
+function pickBestPlayerForCourt(candidates, anchor, currentNames, pastPairMap, allowedLevels) {
+  if (!candidates.length) return null;
 
-    fixedPairs.forEach((fixedPair) => {
-      const found = fixedPair.memberIds
-        .map((id) => players.find((p) => p.id === id))
-        .filter(Boolean);
+  const sorted = [...candidates].sort((a, b) => {
+    const aAllowed = allowedLevels.includes(Number(a.level)) ? 0 : 1;
+    const bAllowed = allowedLevels.includes(Number(b.level)) ? 0 : 1;
+    if (aAllowed !== bAllowed) return aAllowed - bAllowed;
 
-      if (found.length === 2 && !usedIds.has(found[0].id) && !usedIds.has(found[1].id)) {
-        pairs.push(found.map((p) => displayName(p)));
-        usedIds.add(found[0].id);
-        usedIds.add(found[1].id);
-      }
-    });
+    const aPenalty = repeatedPairCountByNames([...currentNames, a.name], pastPairMap);
+    const bPenalty = repeatedPairCountByNames([...currentNames, b.name], pastPairMap);
+    if (aPenalty !== bPenalty) return aPenalty - bPenalty;
 
-    let available = fisherYatesShuffle(players.filter((p) => !usedIds.has(p.id)));
-
-    while (available.length > 0 && pairs.length < twoPlayerPairCount) {
-      const first = available.shift();
-      if (!first) break;
-
-      if (available.length === 0) {
-        triples.push([displayName(first)]);
-        break;
-      }
-
-      available.sort((a, b) => {
-        const aPenalty = scoreMemberGroup([first, a], pastPairMap);
-        const bPenalty = scoreMemberGroup([first, b], pastPairMap);
-        if (aPenalty !== bPenalty) return aPenalty - bPenalty;
-
-        const aDiff = Math.abs(Number(a.level) - Number(first.level));
-        const bDiff = Math.abs(Number(b.level) - Number(first.level));
-        if (aDiff !== bDiff) return aDiff - bDiff;
-
-        return Math.random() - 0.5;
-      });
-
-      const second = available.shift();
-      pairs.push([displayName(first), displayName(second)]);
+    if (anchor) {
+      const aDiff = Math.abs(Number(a.level) - Number(anchor.level));
+      const bDiff = Math.abs(Number(b.level) - Number(anchor.level));
+      if (aDiff !== bDiff) return aDiff - bDiff;
     }
 
-    while (available.length > 0 && triples.length < threePlayerPairCount) {
-      const first = available.shift();
-      if (!first) break;
+    const priorityDiff = comparePlayers(a, b);
+    if (priorityDiff !== 0) return priorityDiff;
+    return Math.random() - 0.5;
+  });
 
-      const triple = [first];
-      available.sort((a, b) => {
-        const aPenalty = scoreMemberGroup([...triple, a], pastPairMap);
-        const bPenalty = scoreMemberGroup([...triple, b], pastPairMap);
-        if (aPenalty !== bPenalty) return aPenalty - bPenalty;
+  return sorted[0] ?? null;
+}
 
-        const aDiff = Math.abs(Number(a.level) - Number(first.level));
-        const bDiff = Math.abs(Number(b.level) - Number(first.level));
-        if (aDiff !== bDiff) return aDiff - bDiff;
-        return Math.random() - 0.5;
-      });
+function makePairsForCourt(anchor, singles, fixedPairs, settings, pastPairMap, allowedLevels) {
+  const desiredGroupCount = Math.min(3, Number(settings.twoPlayerPairCount) + Number(settings.threePlayerPairCount));
+  const maxPlayers = Number(settings.twoPlayerPairCount) * 2 + Number(settings.threePlayerPairCount) * 3;
 
-      while (triple.length < 3 && available.length > 0) {
-        triple.push(available.shift());
-      }
+  const groups = [];
+  const usedIds = new Set();
 
-      triples.push(triple.map((p) => displayName(p)));
+  fixedPairs.forEach((fixedPair) => {
+    const found = fixedPair.members?.filter(Boolean) ?? [];
+    if (found.length === 2 && !usedIds.has(found[0].id) && !usedIds.has(found[1].id) && groups.length < desiredGroupCount) {
+      groups.push(found);
+      usedIds.add(found[0].id);
+      usedIds.add(found[1].id);
     }
+  });
 
-    return {
-      pairs,
-      triples,
-      leftovers: available.map((p) => displayName(p)),
-    };
-  };
+  let available = singles.filter((p) => !usedIds.has(p.id));
 
-  let best = null;
-  let bestScore = Number.POSITIVE_INFINITY;
+  if (anchor && !usedIds.has(anchor.id) && groups.length < desiredGroupCount) {
+    const partner = pickBestPlayerForCourt(
+      available.filter((p) => p.id !== anchor.id),
+      anchor,
+      [anchor.name],
+      pastPairMap,
+      allowedLevels,
+    );
 
-  for (let i = 0; i < PAIRING_OPTIMIZATION_TRIALS; i += 1) {
-    const candidate = tryBuild();
-    const candidateScore = scoreDoublesRows([{ pairs: candidate.pairs, triples: candidate.triples }], pastPairMap);
-    if (candidateScore < bestScore) {
-      best = candidate;
-      bestScore = candidateScore;
+    if (partner) {
+      groups.unshift([anchor, partner]);
+      usedIds.add(anchor.id);
+      usedIds.add(partner.id);
+      available = available.filter((p) => p.id !== partner.id && p.id !== anchor.id);
+    } else {
+      groups.unshift([anchor]);
+      usedIds.add(anchor.id);
+      available = available.filter((p) => p.id !== anchor.id);
     }
   }
 
-  return best || { pairs: [], triples: [], leftovers: [] };
+  while (groups.length < desiredGroupCount && available.length >= 2) {
+    const first = pickBestPlayerForCourt(available, anchor, groups.flat().map((p) => p.name), pastPairMap, allowedLevels);
+    if (!first) break;
+
+    let rest = available.filter((p) => p.id !== first.id);
+    const second = pickBestPlayerForCourt(rest, first, [first.name], pastPairMap, allowedLevels);
+    if (!second) break;
+
+    groups.push([first, second]);
+    available = rest.filter((p) => p.id !== second.id);
+  }
+
+  let playerCount = groups.flat().length;
+
+  while (playerCount < maxPlayers && available.length > 0) {
+    const pairTargets = groups.filter((group) => group.length === 2);
+    if (!pairTargets.length) break;
+
+    let bestChoice = null;
+
+    pairTargets.forEach((group, groupIndex) => {
+      available.forEach((candidate) => {
+        const allowedPenalty = allowedLevels.includes(Number(candidate.level)) ? 0 : 10000;
+        const repeatPenalty = repeatedPairCountByNames([...group.map((p) => p.name), candidate.name], pastPairMap);
+        const anchorPenalty = anchor ? Math.abs(Number(candidate.level) - Number(anchor.level)) : 0;
+        const total = allowedPenalty + repeatPenalty * 100 + anchorPenalty * 10 + comparePlayers(candidate, candidate) * 0;
+
+        if (!bestChoice || total < bestChoice.total) {
+          bestChoice = { groupIndex, candidate, total };
+        }
+      });
+    });
+
+    if (!bestChoice) break;
+
+    groups[bestChoice.groupIndex] = [...groups[bestChoice.groupIndex], bestChoice.candidate];
+    available = available.filter((p) => p.id !== bestChoice.candidate.id);
+    playerCount += 1;
+  }
+
+  return {
+    pairs: groups.filter((group) => group.length === 2).map((group) => group.map((p) => displayName(p))),
+    triples: groups.filter((group) => group.length === 3).map((group) => group.map((p) => displayName(p))),
+    leftovers: available,
+  };
 }
 
 function generateDoublesPlan(players, settings, practiceHistory, fixedPairs) {
@@ -379,10 +401,11 @@ function generateDoublesPlan(players, settings, practiceHistory, fixedPairs) {
     .filter((pair) => pair.members.length === 2);
 
   const remaining = [...active];
+  const unassignedFixedPairs = [...usableFixedPairs];
 
   const rows = settings.courts.map((court) => ({
     courtNumber: court.courtNumber,
-    courtLevel: null,
+    courtLevel: "-",
     fixedPairs: [],
     pairs: [],
     triples: [],
@@ -390,6 +413,8 @@ function generateDoublesPlan(players, settings, practiceHistory, fixedPairs) {
     leftovers: [],
     anchor: null,
     allowedLevels: [],
+    maxPlayers: Number(settings.twoPlayerPairCount) * 2 + Number(settings.threePlayerPairCount) * 3,
+    desiredGroupCount: Math.min(3, Number(settings.twoPlayerPairCount) + Number(settings.threePlayerPairCount)),
   }));
 
   const takePlayerById = (id) => {
@@ -400,113 +425,152 @@ function generateDoublesPlan(players, settings, practiceHistory, fixedPairs) {
   };
 
   rows.forEach((row) => {
-    const anchorSource = remaining[0] ?? null;
-    if (!anchorSource) return;
-
-    const anchor = takePlayerById(anchorSource.id);
+    const anchor = remaining.shift() ?? null;
+    if (!anchor) return;
     row.anchor = anchor;
     row.allowedLevels = allowedLevelsFromAnchorLevel(anchor.level);
     row.courtLevel = `Lv${row.allowedLevels.join("/")}`;
-  });
 
-  usableFixedPairs.forEach((pair) => {
-    const anchorCourt = rows.find((row) => row.anchor && pair.memberIds.includes(row.anchor.id));
-    if (anchorCourt) return;
+    const compatibleFixed = unassignedFixedPairs
+      .filter((pair) => pair.members.every((member) => canJoinAnchorCourt(anchor.level, member.level)))
+      .sort((a, b) => {
+        const aManual = Number(a.preferredCourt ?? 0) === row.courtNumber ? 0 : 1;
+        const bManual = Number(b.preferredCourt ?? 0) === row.courtNumber ? 0 : 1;
+        if (aManual !== bManual) return aManual - bManual;
 
-    const manualCourt = Number(pair.preferredCourt ?? 0);
-    const targetByManual = manualCourt > 0 ? rows.find((row) => row.courtNumber === manualCourt) : null;
-    const preferredRow = rows.find((row) => row.anchor && pair.members.every((member) => canJoinAnchorCourt(row.anchor.level, member.level)));
-    const targetRow = targetByManual || preferredRow || rows[0] || null;
-
-    if (targetRow) {
-      targetRow.fixedPairs.push(pair);
-      pair.memberIds.forEach((id) => {
-        takePlayerById(id);
-      });
-    }
-  });
-
-  rows.forEach((row) => {
-    const anchor = row.anchor;
-    const fixedPlayers = sortByPriority(
-      row.fixedPairs.flatMap((pair) => pair.members).filter((member) => member.id !== anchor?.id)
-    );
-
-    const targetCount = Number(settings.twoPlayerPairCount) * 2 + Number(settings.threePlayerPairCount) * 3;
-    const alreadyAssignedCount = (anchor ? 1 : 0) + fixedPlayers.length;
-    const needCount = Math.max(targetCount - alreadyAssignedCount, 0);
-
-    const eligiblePool = anchor ? remaining.filter((p) => canJoinAnchorCourt(anchor.level, p.level)) : [...remaining];
-    const fallbackPool = remaining.filter((p) => !eligiblePool.some((x) => x.id === p.id));
-    const prioritizedPool = [...eligiblePool, ...fallbackPool];
-
-    const pickedOthers = [];
-    let availablePool = [...prioritizedPool];
-
-    while (pickedOthers.length < needCount && availablePool.length > 0) {
-      availablePool.sort((a, b) => {
-        const aNames = [
-          ...(anchor ? [anchor.name] : []),
-          ...fixedPlayers.map((x) => x.name),
-          ...pickedOthers.map((x) => x.name),
-          a.name,
-        ];
-        const bNames = [
-          ...(anchor ? [anchor.name] : []),
-          ...fixedPlayers.map((x) => x.name),
-          ...pickedOthers.map((x) => x.name),
-          b.name,
-        ];
-
-        const aPenalty = repeatedPairCountByNames(aNames, pastPairMap);
-        const bPenalty = repeatedPairCountByNames(bNames, pastPairMap);
+        const aPenalty = repeatedPairCountByNames([anchor.name, ...a.members.map((m) => m.name)], pastPairMap);
+        const bPenalty = repeatedPairCountByNames([anchor.name, ...b.members.map((m) => m.name)], pastPairMap);
         if (aPenalty !== bPenalty) return aPenalty - bPenalty;
-
-        const aAllowed = anchor && canJoinAnchorCourt(anchor.level, a.level) ? 0 : 1;
-        const bAllowed = anchor && canJoinAnchorCourt(anchor.level, b.level) ? 0 : 1;
-        if (aAllowed !== bAllowed) return aAllowed - bAllowed;
-
-        if (anchor) {
-          const aDiff = Math.abs(Number(a.level) - Number(anchor.level));
-          const bDiff = Math.abs(Number(b.level) - Number(anchor.level));
-          if (aDiff !== bDiff) return aDiff - bDiff;
-        }
-
-        const priorityDiff = comparePlayers(a, b);
-        if (priorityDiff !== 0) return priorityDiff;
-        return Math.random() - 0.5;
+        return 0;
       });
 
-      const next = availablePool.shift();
-      if (!next) break;
-      pickedOthers.push(next);
-      takePlayerById(next.id);
-      availablePool = availablePool.filter((p) => p.id !== next.id);
+    let usedPlayers = 1;
+    let usedGroups = 0;
+
+    for (const pair of compatibleFixed) {
+      if (usedGroups >= row.desiredGroupCount) break;
+      if (usedPlayers + 2 > row.maxPlayers) break;
+      row.fixedPairs.push(pair);
+      usedPlayers += 2;
+      usedGroups += 1;
+      pair.memberIds.forEach((id) => takePlayerById(id));
     }
 
-    const courtPlayers = sortByPriority([
-      ...(anchor ? [anchor] : []),
-      ...fixedPlayers,
-      ...pickedOthers,
-    ]);
+    row.fixedPairs.forEach((pair) => {
+      const idx = unassignedFixedPairs.findIndex((x) => x.id === pair.id);
+      if (idx >= 0) unassignedFixedPairs.splice(idx, 1);
+    });
 
-    const pairResult = makePairsForCourt(
-      courtPlayers,
-      Number(settings.twoPlayerPairCount),
-      Number(settings.threePlayerPairCount),
-      row.fixedPairs,
-      pastPairMap,
-    );
+    const selectedSingles = [];
+    const fixedPlayerIds = new Set(row.fixedPairs.flatMap((pair) => pair.memberIds));
+    let selectedCount = 1 + row.fixedPairs.length * 2;
 
-    row.players = courtPlayers.map((p) => displayName(p));
+    while (selectedCount < row.maxPlayers) {
+      const next = pickBestPlayerForCourt(
+        remaining.filter((p) => !fixedPlayerIds.has(p.id)),
+        row.anchor,
+        [row.anchor.name, ...row.fixedPairs.flatMap((pair) => pair.members.map((m) => m.name)), ...selectedSingles.map((p) => p.name)],
+        pastPairMap,
+        row.allowedLevels,
+      );
+
+      if (!next) break;
+      selectedSingles.push(next);
+      takePlayerById(next.id);
+      selectedCount += 1;
+    }
+
+    const pairResult = makePairsForCourt(row.anchor, selectedSingles, row.fixedPairs, settings, pastPairMap, row.allowedLevels);
+
     row.pairs = pairResult.pairs;
     row.triples = pairResult.triples;
     row.leftovers = pairResult.leftovers;
+    row.players = [
+      displayName(row.anchor),
+      ...row.fixedPairs.flatMap((pair) => pair.members.map((p) => displayName(p))),
+      ...selectedSingles.map((p) => displayName(p)),
+    ];
   });
+
+  const leftoverPool = [
+    ...remaining,
+    ...rows.flatMap((row) => row.leftovers),
+  ];
+
+  rows.forEach((row) => {
+    row.leftovers = [];
+  });
+
+  let progress = true;
+  while (progress) {
+    progress = false;
+
+    for (const row of rows) {
+      const currentGroups = row.pairs.length + row.triples.length;
+      const currentPlayers = row.pairs.length * 2 + row.triples.length * 3;
+      if (currentGroups >= row.desiredGroupCount || currentGroups >= 3) continue;
+      if (currentPlayers + 2 > row.maxPlayers) continue;
+
+      const compatible = leftoverPool.filter((p) => row.anchor && canJoinAnchorCourt(row.anchor.level, p.level));
+      if (compatible.length < 2) continue;
+
+      const first = pickBestPlayerForCourt(compatible, row.anchor, row.players, pastPairMap, row.allowedLevels);
+      const second = pickBestPlayerForCourt(
+        compatible.filter((p) => p.id !== first?.id),
+        first,
+        first ? [first.name] : [],
+        pastPairMap,
+        row.allowedLevels,
+      );
+
+      if (!first || !second) continue;
+
+      row.pairs.push([displayName(first), displayName(second)]);
+      row.players.push(displayName(first), displayName(second));
+
+      const idx1 = leftoverPool.findIndex((p) => p.id === first.id);
+      if (idx1 >= 0) leftoverPool.splice(idx1, 1);
+      const idx2 = leftoverPool.findIndex((p) => p.id === second.id);
+      if (idx2 >= 0) leftoverPool.splice(idx2, 1);
+      progress = true;
+    }
+  }
+
+  for (const leftover of [...leftoverPool]) {
+    let bestRow = null;
+    let bestType = null;
+    let bestIndex = -1;
+    let bestScore = Number.POSITIVE_INFINITY;
+
+    rows.forEach((row) => {
+      if (!row.anchor || !canJoinAnchorCourt(row.anchor.level, leftover.level)) return;
+      const currentPlayers = row.pairs.length * 2 + row.triples.length * 3;
+      if (currentPlayers + 1 > row.maxPlayers) return;
+
+      row.pairs.forEach((pair, pairIndex) => {
+        const score = repeatedPairCountByNames([...pair, displayName(leftover)], pastPairMap);
+        if (score < bestScore) {
+          bestScore = score;
+          bestRow = row;
+          bestType = "pair";
+          bestIndex = pairIndex;
+        }
+      });
+    });
+
+    if (bestRow && bestType === "pair") {
+      const pair = bestRow.pairs[bestIndex];
+      bestRow.pairs.splice(bestIndex, 1);
+      bestRow.triples.push([...pair, displayName(leftover)]);
+      bestRow.players.push(displayName(leftover));
+      const idx = leftoverPool.findIndex((p) => p.id === leftover.id);
+      if (idx >= 0) leftoverPool.splice(idx, 1);
+    }
+  }
 
   return {
     rows,
-    leftovers: [...remaining.map((p) => displayName(p)), ...rows.flatMap((row) => row.leftovers)],
+    leftovers: leftoverPool.map((p) => displayName(p)),
   };
 }
 
@@ -973,10 +1037,7 @@ export default function TennisPracticeGroupMaker() {
   const syncCourtCount = useCallback((nextCount) => {
     const n = Math.max(1, Math.min(7, Number(nextCount) || 1));
     setCourtCount(String(n));
-    setCourts((prev) => {
-      const next = createDefaultCourts(n);
-      return next.map((court, idx) => (prev[idx] ? { ...court, levelBand: prev[idx].levelBand } : court));
-    });
+    setCourts(createDefaultCourts(n));
   }, []);
 
   
