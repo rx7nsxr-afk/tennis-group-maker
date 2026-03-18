@@ -1,24 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-  Button,
-  Input,
-  Label,
-  Badge,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
-} from "./ui";
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { Save, Shuffle, Printer, BookOpen, Plus, Trash2, Trophy, Smartphone, Users, Table2, Link2 } from "lucide-react";
 import { motion } from "framer-motion";
 
@@ -141,7 +121,11 @@ function SelectContent({ children }) {
 const TabsContext = createContext(null);
 function Tabs({ defaultValue, className = "", children }) {
   const [active, setActive] = useState(defaultValue);
-  return <TabsContext.Provider value={{ active, setActive }}><div className={className}>{children}</div></TabsContext.Provider>;
+  return (
+    <TabsContext.Provider value={{ active, setActive }}>
+      <div className={className}>{children}</div>
+    </TabsContext.Provider>
+  );
 }
 function TabsList({ className = "", children }) {
   return <div className={className}>{children}</div>;
