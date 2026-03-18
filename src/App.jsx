@@ -34,7 +34,6 @@ const ROLE_OPTIONS = ["なし", "主将", "男子副将", "女子副将", "主�
 const ROLE_PRIORITY = { 主将: 0, 男子副将: 1, 女子副将: 2, 主務: 3, 副務: 4, 会計: 5, なし: 99 };
 const YEAR_PRIORITY = { OB: 0, "3年": 1, "2年": 2, "1年": 3 };
 const FACULTY_PRIORITY = Object.fromEntries(FACULTY_ORDER.map((code, idx) => [code, idx]));
-const COURT_LEVEL_OPTIONS = ["1~2", "2~3", "3~4"];
 const PRACTICE_GROUP_OPTIONS = [2, 3, 4];
 const PRACTICE_MATCH_MODE_OPTIONS = [
   { value: "strict", label: "通常（レベル差1まで）" },
@@ -109,14 +108,14 @@ function sortByPriority(players) {
   return [...players].sort(comparePlayers);
 }
 
-function parseCourtBand(label) {
-  const [min, max] = label.split("~").map(Number);
-  return { min, max };
+function allowedLevelsFromAnchorLevel(level) {
+  const lv = Number(level);
+  if (lv === 1 || lv === 2) return [1, 2, 3];
+  return [2, 3, 4];
 }
 
-function inCourtBand(level, bandLabel) {
-  const { min, max } = parseCourtBand(bandLabel);
-  return level >= min && level <= max;
+function canJoinAnchorCourt(anchorLevel, candidateLevel) {
+  return allowedLevelsFromAnchorLevel(anchorLevel).includes(Number(candidateLevel));
 }
 
 function pairNameKey(a, b) {
@@ -379,51 +378,118 @@ function generateDoublesPlan(players, settings, practiceHistory, fixedPairs) {
     .map((pair) => ({ ...pair, members: pair.memberIds.map((id) => activeById.get(id)).filter(Boolean) }))
     .filter((pair) => pair.members.length === 2);
 
-  const fixedMemberIds = new Set(usableFixedPairs.flatMap((pair) => pair.memberIds));
-  const remaining = fisherYatesShuffle(active.filter((p) => !fixedMemberIds.has(p.id)));
+  const remaining = [...active];
 
   const rows = settings.courts.map((court) => ({
     courtNumber: court.courtNumber,
-    courtLevel: court.levelBand,
+    courtLevel: null,
     fixedPairs: [],
     pairs: [],
     triples: [],
     players: [],
     leftovers: [],
+    anchor: null,
+    allowedLevels: [],
   }));
 
+  const takePlayerById = (id) => {
+    const idx = remaining.findIndex((p) => p.id === id);
+    if (idx < 0) return null;
+    const [picked] = remaining.splice(idx, 1);
+    return picked;
+  };
+
+  rows.forEach((row) => {
+    const anchorSource = remaining[0] ?? null;
+    if (!anchorSource) return;
+
+    const anchor = takePlayerById(anchorSource.id);
+    row.anchor = anchor;
+    row.allowedLevels = allowedLevelsFromAnchorLevel(anchor.level);
+    row.courtLevel = `Lv${row.allowedLevels.join("/")}`;
+  });
+
   usableFixedPairs.forEach((pair) => {
+    const anchorCourt = rows.find((row) => row.anchor && pair.memberIds.includes(row.anchor.id));
+    if (anchorCourt) return;
+
     const manualCourt = Number(pair.preferredCourt ?? 0);
     const targetByManual = manualCourt > 0 ? rows.find((row) => row.courtNumber === manualCourt) : null;
-    const avgLevel = (Number(pair.members[0].level) + Number(pair.members[1].level)) / 2;
-    const preferredRow = rows.find((row) => inCourtBand(avgLevel, row.courtLevel) && row.fixedPairs.length < Number(settings.twoPlayerPairCount));
-    const fallbackRow = rows.find((row) => row.fixedPairs.length < Number(settings.twoPlayerPairCount));
-    const targetRow = (targetByManual && targetByManual.fixedPairs.length < Number(settings.twoPlayerPairCount))
-      ? targetByManual
-      : preferredRow || fallbackRow;
-    if (targetRow) targetRow.fixedPairs.push(pair);
+    const preferredRow = rows.find((row) => row.anchor && pair.members.every((member) => canJoinAnchorCourt(row.anchor.level, member.level)));
+    const targetRow = targetByManual || preferredRow || rows[0] || null;
+
+    if (targetRow) {
+      targetRow.fixedPairs.push(pair);
+      pair.memberIds.forEach((id) => {
+        takePlayerById(id);
+      });
+    }
   });
 
   rows.forEach((row) => {
-    const fixedPlayers = sortByPriority(row.fixedPairs.flatMap((pair) => pair.members));
-    const remainingTwoPairCount = Math.max(Number(settings.twoPlayerPairCount) - row.fixedPairs.length, 0);
-    const selectionCount = remainingTwoPairCount * 2 + Number(settings.threePlayerPairCount) * 3;
+    const anchor = row.anchor;
+    const fixedPlayers = sortByPriority(
+      row.fixedPairs.flatMap((pair) => pair.members).filter((member) => member.id !== anchor?.id)
+    );
 
-    const eligibleForAnchor = fisherYatesShuffle(remaining.filter((p) => inCourtBand(Number(p.level), row.courtLevel)));
-    const anchor = selectionCount > 0 ? eligibleForAnchor[0] ?? null : null;
+    const targetCount = Number(settings.twoPlayerPairCount) * 2 + Number(settings.threePlayerPairCount) * 3;
+    const alreadyAssignedCount = (anchor ? 1 : 0) + fixedPlayers.length;
+    const needCount = Math.max(targetCount - alreadyAssignedCount, 0);
 
-    if (anchor) {
-      const anchorIndex = remaining.findIndex((p) => p.id === anchor.id);
-      if (anchorIndex >= 0) remaining.splice(anchorIndex, 1);
+    const eligiblePool = anchor ? remaining.filter((p) => canJoinAnchorCourt(anchor.level, p.level)) : [...remaining];
+    const fallbackPool = remaining.filter((p) => !eligiblePool.some((x) => x.id === p.id));
+    const prioritizedPool = [...eligiblePool, ...fallbackPool];
+
+    const pickedOthers = [];
+    let availablePool = [...prioritizedPool];
+
+    while (pickedOthers.length < needCount && availablePool.length > 0) {
+      availablePool.sort((a, b) => {
+        const aNames = [
+          ...(anchor ? [anchor.name] : []),
+          ...fixedPlayers.map((x) => x.name),
+          ...pickedOthers.map((x) => x.name),
+          a.name,
+        ];
+        const bNames = [
+          ...(anchor ? [anchor.name] : []),
+          ...fixedPlayers.map((x) => x.name),
+          ...pickedOthers.map((x) => x.name),
+          b.name,
+        ];
+
+        const aPenalty = repeatedPairCountByNames(aNames, pastPairMap);
+        const bPenalty = repeatedPairCountByNames(bNames, pastPairMap);
+        if (aPenalty !== bPenalty) return aPenalty - bPenalty;
+
+        const aAllowed = anchor && canJoinAnchorCourt(anchor.level, a.level) ? 0 : 1;
+        const bAllowed = anchor && canJoinAnchorCourt(anchor.level, b.level) ? 0 : 1;
+        if (aAllowed !== bAllowed) return aAllowed - bAllowed;
+
+        if (anchor) {
+          const aDiff = Math.abs(Number(a.level) - Number(anchor.level));
+          const bDiff = Math.abs(Number(b.level) - Number(anchor.level));
+          if (aDiff !== bDiff) return aDiff - bDiff;
+        }
+
+        const priorityDiff = comparePlayers(a, b);
+        if (priorityDiff !== 0) return priorityDiff;
+        return Math.random() - 0.5;
+      });
+
+      const next = availablePool.shift();
+      if (!next) break;
+      pickedOthers.push(next);
+      takePlayerById(next.id);
+      availablePool = availablePool.filter((p) => p.id !== next.id);
     }
 
-    const others = anchor ? chooseAdditionalMembers(anchor, remaining, Math.max(selectionCount - 1, 0), pastPairMap) : [];
-    others.forEach((picked) => {
-      const idx = remaining.findIndex((p) => p.id === picked.id);
-      if (idx >= 0) remaining.splice(idx, 1);
-    });
+    const courtPlayers = sortByPriority([
+      ...(anchor ? [anchor] : []),
+      ...fixedPlayers,
+      ...pickedOthers,
+    ]);
 
-    const courtPlayers = sortByPriority([...fixedPlayers, ...(anchor ? [anchor] : []), ...others]);
     const pairResult = makePairsForCourt(
       courtPlayers,
       Number(settings.twoPlayerPairCount),
@@ -506,7 +572,6 @@ function rehydratePlayers(players = []) {
 function createDefaultCourts(count) {
   return Array.from({ length: count }, (_, idx) => ({
     courtNumber: idx + 1,
-    levelBand: idx < 2 ? "1~2" : idx < 4 ? "2~3" : "3~4",
   }));
 }
 
@@ -914,10 +979,7 @@ export default function TennisPracticeGroupMaker() {
     });
   }, []);
 
-  const updateCourtLevel = useCallback((courtNumber, levelBand) => {
-    setCourts((prev) => prev.map((court) => (court.courtNumber === courtNumber ? { ...court, levelBand } : court)));
-  }, []);
-
+  
   const addPlayer = useCallback(() => {
     const name = newName.trim();
     if (!name) return;
@@ -1198,7 +1260,7 @@ export default function TennisPracticeGroupMaker() {
           <TabsContent value="doubles" className="space-y-4">
             <div className="grid gap-4 lg:gap-6 xl:grid-cols-3 print:grid-cols-1">
               <div className="xl:col-span-2">
-                <SectionCard title="ダブルス結果" description="ダブルスではコートレベルと固定ペアを使います。">
+                <SectionCard title="ダブルス結果" description="ダブルスでは各コートの先頭に入る人を基準に、入れるレベル帯が自動で決まります。">
                   {!doublesResult ? (
                     <div className="rounded-2xl border border-dashed p-8 text-center text-slate-500">
                       まだダブルスを組んでいません。
@@ -1276,29 +1338,7 @@ export default function TennisPracticeGroupMaker() {
                       />
                     </div>
 
-                    <div className="space-y-3">
-                      <Label>コートレベル</Label>
-                      {courts.map((court) => (
-                        <div key={court.courtNumber} className="flex items-center gap-2 rounded-2xl border p-3">
-                          <div className="w-16 text-sm font-medium">{court.courtNumber}面</div>
-                          <Select
-                            value={court.levelBand}
-                            onValueChange={(value) => updateCourtLevel(court.courtNumber, value)}
-                          >
-                            <SelectTrigger className="h-11">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {COURT_LEVEL_OPTIONS.map((option) => (
-                                <SelectItem key={option} value={option}>{option}</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-                      ))}
-                    </div>
-
-                    <div className="rounded-2xl bg-slate-100 p-4 text-sm space-y-2">
+                                        <div className="rounded-2xl bg-slate-100 p-4 text-sm space-y-2">
                       <div className="flex items-center justify-between"><span>参加者数</span><span className="font-semibold">{doublesSummary.present}</span></div>
                       <div className="flex items-center justify-between"><span>必要人数</span><span className="font-semibold">{doublesSummary.neededPlayers}</span></div>
                       <div className="flex items-center justify-between"><span>余り予定</span><span className="font-semibold">{doublesSummary.overflow}</span></div>
