@@ -21,8 +21,7 @@ import {
 } from "./ui";
 import { Save, Shuffle, Printer, BookOpen, Plus, Trash2, Trophy, Smartphone, Users, Table2, Link2 } from "lucide-react";
 import { motion } from "framer-motion";
-import { Save, Shuffle, Printer, BookOpen, Plus, Trash2, Trophy, Smartphone, Users, Table2, Link2 } from "lucide-react";
-import { motion } from "framer-motion";
+
 
 const STORAGE_KEY = "tennis-practice-app-v2";
 const ROSTER_STORAGE_KEY = "tennis-practice-roster-v5";
