@@ -1,26 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-  Button,
-  Input,
-  Label,
-  Badge,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger
-} from "./ui";
-
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Save, Shuffle, Printer, BookOpen, Plus, Trash2, Trophy, Smartphone, Users, Table2, Link2 } from "lucide-react";
 import { motion } from "framer-motion";
 
@@ -271,8 +256,6 @@ function choosePracticeMembers(anchor, pool, needCount, pastPairMap, mode) {
       const bDiff = Math.abs(Number(b.level) - Number(anchor.level));
       if (mode !== "free" && aDiff !== bDiff) return aDiff - bDiff;
 
-      const priorityDiff = comparePlayers(a, b);
-      if (priorityDiff !== 0) return priorityDiff;
       return Math.random() - 0.5;
     });
 
@@ -453,17 +436,14 @@ function generatePracticePlan(players, groupSize, practiceHistory, matchMode) {
   const pastPairMap = buildPastPairMap(practiceHistory);
 
   const tryBuild = () => {
-    const remaining = fisherYatesShuffle([...active]);
+    const remaining = [...active];
     const groups = [];
     let groupNumber = 1;
 
     while (remaining.length > 0) {
-      const anchorPool = matchMode === "free" ? fisherYatesShuffle([...remaining]) : [...remaining];
-      const anchor = anchorPool[0] ?? null;
+      const anchor = remaining[0] ?? null;
       if (!anchor) break;
-
-      const anchorIndex = remaining.findIndex((p) => p.id === anchor.id);
-      if (anchorIndex >= 0) remaining.splice(anchorIndex, 1);
+      remaining.shift();
 
       const others = choosePracticeMembers(anchor, remaining, groupSize - 1, pastPairMap, matchMode);
       others.forEach((picked) => {
@@ -471,7 +451,7 @@ function generatePracticePlan(players, groupSize, practiceHistory, matchMode) {
         if (idx >= 0) remaining.splice(idx, 1);
       });
 
-      const members = sortByPriority([anchor, ...others]).map((p) => displayName(p));
+      const members = [displayName(anchor), ...others.map((p) => displayName(p))];
       groups.push({ groupNumber, groupSize: members.length, members });
       groupNumber += 1;
     }
